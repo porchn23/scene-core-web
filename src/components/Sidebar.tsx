@@ -2,6 +2,97 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useAuth } from '@/context/AuthContext';
+
+export default function Sidebar() {
+    const pathname = usePathname();
+    const { user, signOut } = useAuth();
+
+    return (
+        <aside className="sidebar">
+            {/* Logo */}
+            <div className="sidebar-logo">
+                <div className="sidebar-logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M15 10l4.553-2.069A1 1 0 0121 8.869v6.262a1 1 0 01-1.447.894L15 14M5 8h8a2 2 0 012 2v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4a2 2 0 012-2z" />
+                    </svg>
+                </div>
+                <div className="sidebar-logo-text">
+                    <span className="sidebar-logo-name">Scene Core</span>
+                    <span className="sidebar-logo-sub">AI Video Studio</span>
+                </div>
+            </div>
+
+            {/* Navigation */}
+            <nav className="sidebar-nav">
+                {navItems.map((group) => (
+                    <div key={group.section}>
+                        <div className="sidebar-section-label">{group.section}</div>
+                        {group.items.map((item) => {
+                            const isActive = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href + '/'));
+                            return (
+                                <Link
+                                    key={item.href}
+                                    href={item.href}
+                                    className={`nav-item ${isActive ? 'active' : ''}`}
+                                >
+                                    <span className="nav-item-icon">{item.icon}</span>
+                                    {item.label}
+                                    {('badge' in item && (item as any).badge) && (
+                                        <span className="nav-item-badge">{(item as any).badge as React.ReactNode}</span>
+                                    )}
+                                </Link>
+                            );
+                        })}
+                    </div>
+                ))}
+            </nav>
+
+            {/* User Footer */}
+            <div className="sidebar-footer">
+                <div className="sidebar-user">
+                    <div className="sidebar-avatar">
+                        {user ? (
+                            <img src={user.user_metadata.avatar_url || `https://ui-avatars.com/api/?name=${user.email}`} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%' }} />
+                        ) : (
+                            'SC'
+                        )}
+                    </div>
+                    <div className="sidebar-user-info">
+                        <div className="sidebar-user-name" title={user?.email}>{user?.user_metadata.full_name || user?.email || 'Scene Core Admin'}</div>
+                        <div className="sidebar-user-role">{user ? 'Director' : 'Guest'}</div>
+                    </div>
+                    {user && (
+                        <button
+                            onClick={() => signOut()}
+                            style={{
+                                background: 'none',
+                                border: 'none',
+                                padding: 4,
+                                cursor: 'pointer',
+                                color: 'var(--color-text-tertiary)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                borderRadius: 4,
+                                transition: 'all 0.2s'
+                            }}
+                            onMouseEnter={e => e.currentTarget.style.color = '#ff4d4d'}
+                            onMouseLeave={e => e.currentTarget.style.color = 'var(--color-text-tertiary)'}
+                            title="Sign Out"
+                        >
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
+                                <polyline points="16 17 21 12 16 7" />
+                                <line x1="21" y1="12" x2="9" y2="12" />
+                            </svg>
+                        </button>
+                    )}
+                </div>
+            </div>
+        </aside>
+    );
+}
 
 const navItems = [
     {
@@ -32,7 +123,6 @@ const navItems = [
                         <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
                     </svg>
                 ),
-                badge: 3,
             }
         ],
     },
@@ -120,63 +210,3 @@ const navItems = [
         ],
     },
 ];
-
-export default function Sidebar() {
-    const pathname = usePathname();
-
-    return (
-        <aside className="sidebar">
-            {/* Logo */}
-            <div className="sidebar-logo">
-                <div className="sidebar-logo-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M15 10l4.553-2.069A1 1 0 0121 8.869v6.262a1 1 0 01-1.447.894L15 14M5 8h8a2 2 0 012 2v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4a2 2 0 012-2z" />
-                    </svg>
-                </div>
-                <div className="sidebar-logo-text">
-                    <span className="sidebar-logo-name">Scene Core</span>
-                    <span className="sidebar-logo-sub">AI Video Studio</span>
-                </div>
-            </div>
-
-            {/* Navigation */}
-            <nav className="sidebar-nav">
-                {navItems.map((group) => (
-                    <div key={group.section}>
-                        <div className="sidebar-section-label">{group.section}</div>
-                        {group.items.map((item) => {
-                            const isActive = pathname === item.href;
-                            return (
-                                <Link
-                                    key={item.href}
-                                    href={item.href}
-                                    className={`nav-item ${isActive ? 'active' : ''}`}
-                                >
-                                    <span className="nav-item-icon">{item.icon}</span>
-                                    {item.label}
-                                    {('badge' in item && item.badge) && (
-                                        <span className="nav-item-badge">{item.badge as React.ReactNode}</span>
-                                    )}
-                                </Link>
-                            );
-                        })}
-                    </div>
-                ))}
-            </nav>
-
-            {/* User Footer */}
-            <div className="sidebar-footer">
-                <div className="sidebar-user">
-                    <div className="sidebar-avatar">SC</div>
-                    <div className="sidebar-user-info">
-                        <div className="sidebar-user-name">Scene Core Admin</div>
-                        <div className="sidebar-user-role">Director</div>
-                    </div>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }}>
-                        <circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" />
-                    </svg>
-                </div>
-            </div>
-        </aside>
-    );
-}

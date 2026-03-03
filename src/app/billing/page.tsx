@@ -7,9 +7,10 @@ import TopBar from '@/components/TopBar';
 import { tenantService, billingService } from '@/lib/services';
 import type { TenantRead as Tenant, TransactionRead as Transaction } from '@/lib/services';
 
-const TENANT_ID = '7a39f072-bb89-4777-8f9f-a938196f35a7';
+import { useAuth } from '@/context/AuthContext';
 
 export default function BillingPage() {
+    const { tenantId, loading: authLoading } = useAuth();
     const [tenant, setTenant] = useState<Tenant | null>(null);
     const [history, setHistory] = useState<Transaction[]>([]);
     const [loading, setLoading] = useState(true);
@@ -18,26 +19,34 @@ export default function BillingPage() {
     const [topping, setTopping] = useState(false);
     const [toast, setToast] = useState('');
 
-    const load = useCallback(async () => {
+    const load = useCallback(async (tId: string) => {
+        setLoading(true);
         try {
             const [t, h] = await Promise.all([
-                tenantService.getById(TENANT_ID),
-                billingService.listTransactions(TENANT_ID),
+                tenantService.getById(tId),
+                billingService.listTransactions(tId),
             ]);
             setTenant(t as Tenant);
             setHistory(h as Transaction[]);
-        } catch { } finally { setLoading(false); }
+        } catch (e: any) {
+            console.error('Billing load error:', e);
+        } finally { setLoading(false); }
     }, []);
 
-    useEffect(() => { load(); }, [load]);
+    useEffect(() => {
+        if (tenantId) {
+            load(tenantId);
+        }
+    }, [tenantId, load]);
 
     const handleTopUp = async () => {
+        if (!tenantId) return;
         setTopping(true);
         try {
-            await billingService.topup(TENANT_ID, topUpAmount, topUpDesc);
+            await billingService.topup(tenantId, topUpAmount, topUpDesc);
             setToast(`✅ Top-up ${topUpAmount} credits สำเร็จ!`);
             setTimeout(() => setToast(''), 4000);
-            load();
+            load(tenantId);
         } catch (e: any) {
             setToast(`❌ ${e.detail || e.message || 'Top-up failed'}`);
             setTimeout(() => setToast(''), 4000);

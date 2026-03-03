@@ -7,12 +7,21 @@ import TopBar from '@/components/TopBar';
 import Modal from '@/components/Modal';
 import { projectService, tenantService } from '@/lib/services';
 import type { ProjectRead, ProjectCreate, ProjectUpdate, TenantRead } from '@/lib/services';
+import { useAuth } from '@/context/AuthContext';
 
 // ===================== CONSTANTS =====================
 const ASPECT_OPTIONS = ['16:9', '9:16', '4:3', '1:1', '2.39:1'];
 const RESOLUTION_OPTIONS = ['720p', '1080p', '4K'];
-const PROJECT_TYPE_OPTIONS = ['short_film', 'commercial', 'music_video', 'series_episode', 'other'];
+const PROJECT_TYPE_OPTIONS = ['movie', 'series', 'short_film', 'commercial', 'music_video', 'other'];
 const GENRE_OPTIONS = ['action', 'comedy', 'drama', 'horror', 'romance', 'sci-fi', 'fantasy', 'thriller', 'documentary', 'animation'];
+
+const STYLE_PRESETS = [
+    { id: 'marvel', name: 'Marvel Studio', img: '/styles/marvel.png', prompt: 'marvel cinematic style, high contrast, heroic lighting' },
+    { id: 'pixar', name: 'Pixar Animation', img: '/styles/pixar.png', prompt: 'pixar 3d animation style, vibrant, soft shadows' },
+    { id: 'ghibli', name: 'Studio Ghibli', img: '/styles/ghibli.png', prompt: 'ghibli anime style, watercolor textures, peaceful' },
+    { id: 'wb', name: 'Warner Bros (Epic)', img: '/styles/wb.png', prompt: 'wb cinematic style, moody, epic scale, dark tones' },
+    { id: 'wes', name: 'Wes Anderson', img: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=200&h=110&auto=format&fit=crop', prompt: 'wes anderson style, symmetrical, pastel colors, quirky' },
+];
 
 function getEmoji(name: string): string {
     const map: Record<string, string> = {
@@ -98,6 +107,8 @@ function ProjectForm({
     const [tenantId, setTenantId] = useState(initial?.tenant_id ?? tenants[0]?.id ?? '');
     const [status, setStatus] = useState(initial?.status ?? 'draft');
 
+    const { userProfile } = useAuth();
+
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         if (!name.trim()) return;
@@ -144,25 +155,45 @@ function ProjectForm({
                         onChange={e => setLogline(e.target.value)} rows={2} style={{ resize: 'none' }} />
                 </div>
 
-                {/* Type + Genre */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                    <div className="form-field">
-                        <label className="form-label">Project Type</label>
-                        <select className="form-select" value={projectType} onChange={e => setProjectType(e.target.value)}>
-                            {PROJECT_TYPE_OPTIONS.map(t => (
-                                <option key={t} value={t}>{t.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}</option>
-                            ))}
-                        </select>
+                {/* Visual Style Selection */}
+                <div className="form-field">
+                    <label className="form-label">Visual Style Reference <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontWeight: 400, textTransform: 'none' }}>(Studio Look)</span></label>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                        <button type="button" onClick={() => setGenre('')}
+                            style={{
+                                padding: 8, borderRadius: 8, border: '1.5px solid',
+                                borderColor: genre === '' ? 'var(--color-accent)' : 'var(--color-border)',
+                                background: genre === '' ? 'var(--color-accent-light)' : 'var(--color-surface-2)',
+                                textAlign: 'center', cursor: 'pointer', transition: 'all 0.15s'
+                            }}>
+                            <div style={{ height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, opacity: 0.5 }}>🚫</div>
+                            <div style={{ fontSize: 10, fontWeight: 700, marginTop: 4, color: genre === '' ? 'var(--color-accent)' : 'var(--color-text-secondary)' }}>None</div>
+                        </button>
+                        {STYLE_PRESETS.map(s => (
+                            <button key={s.id} type="button" onClick={() => setGenre(s.name)}
+                                style={{
+                                    padding: '4px', borderRadius: 8, border: '1.5px solid',
+                                    borderColor: genre === s.name ? 'var(--color-accent)' : 'var(--color-border)',
+                                    background: genre === s.name ? 'var(--color-accent-light)' : 'var(--color-surface-2)',
+                                    textAlign: 'left', cursor: 'pointer', transition: 'all 0.15s', overflow: 'hidden'
+                                }}>
+                                <div style={{ height: 44, background: '#000', borderRadius: 4, overflow: 'hidden' }}>
+                                    <img src={s.img} alt={s.name} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.8 }} />
+                                </div>
+                                <div style={{ fontSize: 9, fontWeight: 800, marginTop: 4, padding: '0 2px', color: genre === s.name ? 'var(--color-accent)' : 'var(--color-text-primary)', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>{s.name}</div>
+                            </button>
+                        ))}
                     </div>
-                    <div className="form-field">
-                        <label className="form-label">Genre <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontWeight: 400, textTransform: 'none' }}>(optional)</span></label>
-                        <select className="form-select" value={genre} onChange={e => setGenre(e.target.value)}>
-                            <option value="">— None —</option>
-                            {GENRE_OPTIONS.map(g => (
-                                <option key={g} value={g}>{g.charAt(0).toUpperCase() + g.slice(1)}</option>
-                            ))}
-                        </select>
-                    </div>
+                </div>
+
+                {/* Type */}
+                <div className="form-field">
+                    <label className="form-label">Project Type</label>
+                    <select className="form-select" value={projectType} onChange={e => setProjectType(e.target.value)}>
+                        {PROJECT_TYPE_OPTIONS.map(t => (
+                            <option key={t} value={t}>{t.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}</option>
+                        ))}
+                    </select>
                 </div>
 
                 {/* Aspect Ratio */}
@@ -276,6 +307,7 @@ function ConfirmDelete({ open, project, loading, onClose, onConfirm }: {
 
 // ===================== MAIN PAGE =====================
 export default function ProjectsPage() {
+    const { user, userProfile, tenantId, loading: authLoading } = useAuth();
     const [projects, setProjects] = useState<ProjectRead[]>([]);
     const [tenants, setTenants] = useState<TenantRead[]>([]);
     const [loading, setLoading] = useState(true);
@@ -302,37 +334,44 @@ export default function ProjectsPage() {
 
     // ---- Load data ----
     const reload = useCallback(async () => {
+        if (!user?.id || !tenantId) {
+            setLoading(false);
+            return;
+        }
         setLoading(true);
         setApiError('');
         try {
             const [ps, ts] = await Promise.all([
-                projectService.list(),
-                tenantService.list(),
+                projectService.list(tenantId),
+                tenantService.list(user.id),
             ]);
             setProjects(ps);
             setTenants(ts);
-        } catch (err: unknown) {
-            const e = err as { detail?: string };
-            setApiError(e?.detail ?? 'Failed to connect to API. Is the backend running?');
+        } catch (err: any) {
+            console.error('Projects Load Error:', err);
+            setApiError(err.message || 'Failed to connect to API.');
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [user?.id, tenantId]);
 
-    useEffect(() => { reload(); }, [reload]);
+    useEffect(() => {
+        reload();
+    }, [reload]);
 
     // ---- Create ----
     const handleCreate = async (payload: ProjectCreate | ProjectUpdate) => {
         setMutating(true);
         setMutateError('');
         try {
-            const created = await projectService.create(payload as ProjectCreate);
+            if (!tenantId) throw new Error('Tenant ID required');
+            const created = await projectService.create(payload as ProjectCreate, tenantId);
             setProjects(prev => [created, ...prev]);
             setCreateOpen(false);
             notify('Project created successfully!');
-        } catch (err: unknown) {
-            const e = err as { detail?: string };
-            setMutateError(e?.detail ?? 'Failed to create project.');
+        } catch (err: any) {
+            console.error('Create project error:', err);
+            setMutateError(err.message || 'Failed to create project.');
         } finally {
             setMutating(false);
         }
@@ -340,17 +379,17 @@ export default function ProjectsPage() {
 
     // ---- Edit ----
     const handleEdit = async (payload: ProjectCreate | ProjectUpdate) => {
-        if (!editTarget) return;
+        if (!editTarget || !tenantId) return;
         setMutating(true);
         setMutateError('');
         try {
-            const updated = await projectService.update(editTarget.id, payload as ProjectUpdate);
+            const updated = await projectService.update(editTarget.id, payload as ProjectUpdate, tenantId);
             setProjects(prev => prev.map(p => p.id === editTarget.id ? updated : p));
             setEditTarget(null);
             notify('Project updated!');
-        } catch (err: unknown) {
-            const e = err as { detail?: string };
-            setMutateError(e?.detail ?? 'Failed to update project.');
+        } catch (err: any) {
+            console.error('Update project error:', err);
+            setMutateError(err.message || 'Failed to update project.');
         } finally {
             setMutating(false);
         }
@@ -358,10 +397,10 @@ export default function ProjectsPage() {
 
     // ---- Delete ----
     const handleDelete = async () => {
-        if (!deleteTarget) return;
+        if (!deleteTarget || !tenantId) return;
         setMutating(true);
         try {
-            await projectService.delete(deleteTarget.id);
+            await projectService.delete(deleteTarget.id, tenantId);
             setProjects(prev => prev.filter(p => p.id !== deleteTarget.id));
             setDeleteTarget(null);
             notify('Project deleted.');

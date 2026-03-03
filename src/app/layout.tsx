@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { AuthProvider } from "@/context/AuthContext";
 
 export const metadata: Metadata = {
   title: "AI Video Studio — Director's Console",
@@ -13,7 +14,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="th">
-      <body>{children}</body>
+      <body>
+        <AuthProvider>
+          {children}
+        </AuthProvider>
+      </body>
     </html>
   );
 }

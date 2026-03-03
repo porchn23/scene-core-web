@@ -25,10 +25,6 @@ CREATE TABLE public.actors (
   base_prompt text NOT NULL,
   negative_prompt text,
   face_image_url text NOT NULL,
-  image_urls text[],
-  lora_url text,
-  lora_training_status text,
-  lora_training_id text,
   voice_profile jsonb NOT NULL,
   visibility text DEFAULT 'private'::text,
   usage_fee numeric DEFAULT 0.0000,
@@ -37,7 +33,13 @@ CREATE TABLE public.actors (
   level integer DEFAULT 1,
   experience_points numeric DEFAULT 0.00,
   popularity_score numeric DEFAULT 0.00,
+  image_urls ARRAY DEFAULT '{}'::text[],
+  lora_url text,
+  lora_training_status text,
+  lora_training_id text,
+  user_id uuid,
   CONSTRAINT actors_pkey PRIMARY KEY (id),
+  CONSTRAINT actors_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id),
   CONSTRAINT actors_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id)
 );
 CREATE TABLE public.characters (
@@ -49,19 +51,33 @@ CREATE TABLE public.characters (
   outfit_description text,
   created_at timestamp without time zone DEFAULT now(),
   updated_at timestamp without time zone DEFAULT now(),
+  age integer,
+  age_description text,
   CONSTRAINT characters_pkey PRIMARY KEY (id),
   CONSTRAINT characters_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
   CONSTRAINT characters_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES public.actors(id)
+);
+CREATE TABLE public.episodes (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  project_id uuid NOT NULL,
+  episode_number integer NOT NULL,
+  title text,
+  status text DEFAULT 'draft'::text,
+  created_at timestamp without time zone DEFAULT now(),
+  updated_at timestamp without time zone DEFAULT now(),
+  CONSTRAINT episodes_pkey PRIMARY KEY (id),
+  CONSTRAINT episodes_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id)
 );
 CREATE TABLE public.locations (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   project_id uuid NOT NULL,
   name text NOT NULL,
   description text,
-  environment_type text,
-  lighting_condition text,
+  lighting_hint text,
   image_reference_url text,
   created_at timestamp without time zone DEFAULT now(),
+  environment_type text,
+  lighting_condition text,
   CONSTRAINT locations_pkey PRIMARY KEY (id),
   CONSTRAINT locations_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id)
 );
@@ -79,19 +95,29 @@ CREATE TABLE public.projects (
   status text DEFAULT 'concept'::text,
   created_at timestamp without time zone DEFAULT now(),
   updated_at timestamp without time zone DEFAULT now(),
+  timeline_data jsonb,
+  user_id uuid,
   CONSTRAINT projects_pkey PRIMARY KEY (id),
-  CONSTRAINT projects_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id)
+  CONSTRAINT projects_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id),
+  CONSTRAINT projects_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id)
 );
 CREATE TABLE public.render_jobs (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
-  shot_id uuid NOT NULL,
+  shot_id uuid,
   provider_job_id text,
   status text DEFAULT 'pending'::text,
   retry_count integer DEFAULT 0,
   error_log text,
   created_at timestamp without time zone DEFAULT now(),
   updated_at timestamp without time zone DEFAULT now(),
+  project_id uuid,
+  scene_id uuid,
+  actor_id uuid,
+  job_type text DEFAULT 'render_video'::text,
   CONSTRAINT render_jobs_pkey PRIMARY KEY (id),
+  CONSTRAINT render_jobs_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
+  CONSTRAINT render_jobs_scene_id_fkey FOREIGN KEY (scene_id) REFERENCES public.scenes(id),
+  CONSTRAINT render_jobs_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES public.actors(id),
   CONSTRAINT render_jobs_shot_id_fkey FOREIGN KEY (shot_id) REFERENCES public.shots(id)
 );
 CREATE TABLE public.scenes (
@@ -103,13 +129,17 @@ CREATE TABLE public.scenes (
   time_of_day text DEFAULT 'DAY'::text,
   weather text,
   mood text,
-  character_states jsonb,
   status text DEFAULT 'draft'::text,
   created_at timestamp without time zone DEFAULT now(),
   updated_at timestamp without time zone DEFAULT now(),
+  description text,
+  title text,
+  character_states jsonb DEFAULT '{}'::jsonb,
+  episode_id uuid,
   CONSTRAINT scenes_pkey PRIMARY KEY (id),
   CONSTRAINT scenes_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
-  CONSTRAINT scenes_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id)
+  CONSTRAINT scenes_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id),
+  CONSTRAINT scenes_episode_id_fkey FOREIGN KEY (episode_id) REFERENCES public.episodes(id)
 );
 CREATE TABLE public.shot_dialogues (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -158,6 +188,8 @@ CREATE TABLE public.shots (
   created_at timestamp without time zone DEFAULT now(),
   updated_at timestamp without time zone DEFAULT now(),
   selected_generation_id uuid,
+  ai_prompt text,
+  video_url text,
   CONSTRAINT shots_pkey PRIMARY KEY (id),
   CONSTRAINT shots_scene_id_fkey FOREIGN KEY (scene_id) REFERENCES public.scenes(id),
   CONSTRAINT shots_selected_generation_fkey FOREIGN KEY (selected_generation_id) REFERENCES public.shot_generations(id)
@@ -169,6 +201,7 @@ CREATE TABLE public.tenants (
   credit_balance numeric DEFAULT 0.0000,
   is_active boolean DEFAULT true,
   created_at timestamp without time zone DEFAULT now(),
+  api_keys jsonb DEFAULT '{}'::jsonb,
   CONSTRAINT tenants_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.transactions (
@@ -189,6 +222,10 @@ CREATE TABLE public.users (
   email text NOT NULL UNIQUE,
   role text DEFAULT 'member'::text,
   created_at timestamp without time zone DEFAULT now(),
+  auth_id uuid UNIQUE,
+  avatar_url text,
+  display_name text,
+  updated_at timestamp without time zone DEFAULT now(),
   CONSTRAINT users_pkey PRIMARY KEY (id),
   CONSTRAINT users_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id)
 );
