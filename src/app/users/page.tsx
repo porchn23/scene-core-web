@@ -10,7 +10,7 @@ import { useAuth } from '@/context/AuthContext';
 import { projectService } from '@/lib/services';
 
 export default function UsersPage() {
-    const { tenantId, userProfile } = useAuth();
+    const { tenantId, userProfile, user } = useAuth();
     const [users, setUsers] = useState<User[]>([]);
     const [projects, setProjects] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
@@ -24,7 +24,7 @@ export default function UsersPage() {
         try {
             // Fetch users in this tenant
             const [usersData, projectsData] = await Promise.all([
-                userService.listByTenant(tenantId),
+                userService.listByTenant(tenantId, user?.id ?? ''),
                 projectService.list(tenantId)
             ]);
             setUsers(usersData as User[]);
@@ -44,7 +44,7 @@ export default function UsersPage() {
         };
     };
 
-    const startEdit = (u: User) => { setEditing(u); setEditEmail(u.email); setEditRole(u.role); };
+    const startEdit = (u: User) => { setEditing(u); setEditEmail(u.email); setEditRole(u.role || 'member'); };
 
     const saveEdit = async () => {
         if (!editing) return;

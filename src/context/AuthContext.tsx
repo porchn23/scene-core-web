@@ -7,11 +7,12 @@ import { User } from '@supabase/supabase-js';
 import type { UserRead } from '@/lib/services';
 
 interface AuthContextType {
-    user: User | null; // Supabase Auth User
-    userProfile: UserRead | null; // public.users record
+    user: User | null;
+    userProfile: UserRead | null;
     tenantId: string | null;
     loading: boolean;
     signOut: () => Promise<void>;
+    switchTenant: (id: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -24,149 +25,159 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const router = useRouter();
     const syncingRef = useRef(false);
 
-    const syncUser = async (supabaseUser: User | null) => {
-        if (!supabaseUser) return null;
+    const syncUser = async (supabaseUser: User): Promise<string | null> => {
         if (syncingRef.current) return null;
         syncingRef.current = true;
-
         try {
             const email = supabaseUser.email?.toLowerCase();
-            if (!email) {
-                console.error('❌ User has no email');
-                return null;
-            }
-            console.log('🔄 Syncing profile for:', email);
+            if (!email) return null;
 
-            // Try to fetch from public.users - case insensitive
-            let { data: profile, error: fetchError } = await supabase
-                .from('users')
-                .select('*')
-                .ilike('email', email)
-                .maybeSingle();
+            // 1. Sync global profile
+            let { data: profile } = await supabase.from('users').select('*').eq('auth_id', supabaseUser.id).maybeSingle();
 
-            if (fetchError) {
-                console.error('❌ Fetch Error:', fetchError);
-            }
-
-            // If not exists, attempt to create
             if (!profile) {
-                console.log('✨ Profile not found. Attempting creation...');
-                console.log('🏢 Creating unique personal studio...');
-                const ownerName = supabaseUser.user_metadata?.full_name?.split(' ')[0] || 'My';
-                let tId: string | undefined;
-                console.log('⚠️ No profile found for user:', email || supabaseUser.id);
-
-                // CRITICAL FIX: Create a NEW personal tenant instead of joining a random one!
-                const { data: newTenant, error: tErr } = await supabase.from('tenants').insert({
-                    name: `${supabaseUser.user_metadata?.full_name || 'Personal'} Studio`,
-                    plan: 'indie'
-                }).select().single();
-
-                if (tErr) {
-                    console.error('❌ Tenant Creation Failed:', tErr.message);
-                    return null;
-                }
-
-                if (newTenant) {
-                    console.log('📝 Inserting user record tied to new tenant...');
-                    const { data: newProfile, error: createError } = await supabase.from('users').insert({
-                        email: email,
+                const { data: byEmail } = await supabase.from('users').select('*').ilike('email', email).maybeSingle();
+                if (byEmail) {
+                    const { data: updated } = await supabase.from('users').update({ auth_id: supabaseUser.id }).eq('id', byEmail.id).select().single();
+                    profile = updated;
+                } else {
+                    const { data: newP } = await supabase.from('users').insert({
+                        email,
                         auth_id: supabaseUser.id,
-                        tenant_id: newTenant.id,
-                        role: 'admin',
-                        display_name: supabaseUser.user_metadata?.full_name || 'New Director',
-                        avatar_url: supabaseUser.user_metadata?.avatar_url
+                        display_name: supabaseUser.user_metadata?.full_name || 'Owner',
+                        avatar_url: supabaseUser.user_metadata?.avatar_url || null
                     }).select().single();
-
-                    if (createError) {
-                        if (createError.code === '23505') { // Duplicate unique
-                            const { data: retry } = await supabase.from('users').select('*').eq('email', email).maybeSingle();
-                            profile = retry;
-                        } else {
-                            console.error('❌ INSERT Error:', createError);
-                        }
-                    } else {
-                        console.log('✅ Created:', newProfile.id);
-                        profile = newProfile;
-                    }
-                }
-            } else {
-                console.log('👤 Profile active:', profile.id);
-
-                if (!profile.auth_id || !profile.avatar_url) {
-                    console.log('🔗 Updating profile metadata...');
-                    await supabase.from('users').update({
-                        auth_id: supabaseUser.id,
-                        display_name: profile.display_name || supabaseUser.user_metadata?.full_name,
-                        avatar_url: profile.avatar_url || supabaseUser.user_metadata?.avatar_url
-                    }).eq('id', profile.id);
+                    profile = newP;
                 }
             }
+            if (profile) setUserProfile(profile as UserRead);
 
-            return profile as UserRead;
+            // 2. Determine an active tenant ID
+            // Check if they own any tenant
+            const { data: owned } = await supabase.from('tenants').select('id').eq('owner_id', supabaseUser.id).order('created_at').limit(1).maybeSingle();
+            if (owned) return owned.id;
+
+            // Check if they are a member of any tenant
+            if (profile?.id) {
+                const { data: memberOf } = await supabase.from('tenant_members').select('tenant_id').eq('user_id', profile.id).limit(1).maybeSingle();
+                if (memberOf) return memberOf.tenant_id;
+            }
+
+            // 3. Fallback: Create a default Personal Studio
+            const { data: newT } = await supabase.from('tenants').insert({
+                name: `${supabaseUser.user_metadata?.full_name || 'Personal'} Studio`,
+                plan: 'indie',
+                owner_id: supabaseUser.id
+            }).select().single();
+
+            if (newT && profile?.id) {
+                await supabase.from('tenant_members').insert({
+                    tenant_id: newT.id,
+                    user_id: profile.id,
+                    role: 'owner'
+                });
+                return newT.id;
+            } else if (newT) {
+                return newT.id;
+            }
+
+            return null;
+        } catch (e) {
+            console.error('syncUser error:', e);
+            return null;
         } finally {
             syncingRef.current = false;
         }
     };
 
+    const switchTenant = async (id: string) => {
+        if (!user || !userProfile) return;
+        setLoading(true);
+        try {
+            const { data: owned } = await supabase.from('tenants').select('*').eq('id', id).eq('owner_id', user.id).maybeSingle();
+            const { data: member } = await supabase.from('tenant_members').select('*').eq('user_id', userProfile.id).eq('tenant_id', id).maybeSingle();
+
+            if (!owned && !member) throw new Error('No access to this studio.');
+
+            setTenantId(id);
+            localStorage.setItem('scene_core_last_tenant_id', id);
+            router.push('/dashboard');
+        } catch (e: any) {
+            alert(e.message || 'Access Denied');
+        } finally {
+            setLoading(false);
+        }
+    };
+
     useEffect(() => {
         let mounted = true;
-
         const handleSession = async (session: any) => {
-            if (session) {
+            try {
+                if (!session) {
+                    if (mounted) {
+                        setUser(null);
+                        setUserProfile(null);
+                        setTenantId(null);
+                    }
+                    return;
+                }
                 setUser(session.user);
-                const profile = await syncUser(session.user);
-                if (mounted && profile) {
-                    setUserProfile(profile);
-                    setTenantId(profile.tenant_id);
+                const verifiedTenantId = await syncUser(session.user);
+                if (mounted && verifiedTenantId) {
+                    const lastId = localStorage.getItem('scene_core_last_tenant_id');
+                    if (lastId && lastId !== verifiedTenantId) {
+                        // Check if they have access to lastId
+                        const { data: owned } = await supabase.from('tenants').select('id').eq('id', lastId).eq('owner_id', session.user.id).maybeSingle();
+                        let hasAccess = !!owned;
+                        if (!hasAccess) {
+                            // Find out if they are a member
+                            const { data: profile } = await supabase.from('users').select('id').eq('auth_id', session.user.id).single();
+                            if (profile) {
+                                const { data: member } = await supabase.from('tenant_members').select('id').eq('user_id', profile.id).eq('tenant_id', lastId).maybeSingle();
+                                hasAccess = !!member;
+                            }
+                        }
+
+                        if (hasAccess) {
+                            setTenantId(lastId);
+                            return;
+                        }
+                    }
+                    setTenantId(verifiedTenantId);
                 }
-            } else {
-                if (mounted) {
-                    setUser(null);
-                    setUserProfile(null);
-                    setTenantId(null);
-                }
+            } catch (err) {
+                console.error('Session handling error:', err);
+            } finally {
+                if (mounted) setLoading(false);
             }
-            if (mounted) setLoading(false);
         };
 
-        const fetchSession = async () => {
-            setLoading(true);
-            const { data: { session } } = await supabase.auth.getSession();
-            await handleSession(session);
-        };
-
-        fetchSession();
-
-        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-            await handleSession(session);
-            if (event === 'SIGNED_OUT') {
-                router.push('/login');
-            }
+        supabase.auth.getSession().then(({ data: { session } }) => handleSession(session));
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+            handleSession(session);
         });
 
         return () => {
             mounted = false;
             subscription.unsubscribe();
         };
-    }, [router]);
+    }, []);
 
     const signOut = async () => {
+        localStorage.removeItem('scene_core_last_tenant_id');
         await supabase.auth.signOut();
         router.push('/login');
     };
 
     return (
-        <AuthContext.Provider value={{ user, userProfile, tenantId, loading, signOut }}>
+        <AuthContext.Provider value={{ user, userProfile, tenantId, loading, signOut, switchTenant }}>
             {children}
         </AuthContext.Provider>
     );
 }
 
-export function useAuth() {
+export const useAuth = () => {
     const context = useContext(AuthContext);
-    if (context === undefined) {
-        throw new Error('useAuth must be used within an AuthProvider');
-    }
+    if (!context) throw new Error('useAuth must be used within AuthProvider');
     return context;
-}
+};

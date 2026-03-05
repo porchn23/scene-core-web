@@ -6,6 +6,7 @@ import Modal from '@/components/Modal';
 import { projectService, episodeService, sceneService, shotService, characterService, actorService, locationService } from '@/lib/services';
 import type { ProjectRead, ProjectUpdate, EpisodeRead, EpisodeCreate, EpisodeUpdate, SceneRead, SceneCreate, SceneUpdate, ShotRead, ShotCreate, ShotUpdate, CharacterRead, ActorRead, LocationRead } from '@/lib/services';
 import { useAuth } from '@/context/AuthContext';
+import { useToast } from '@/hooks/useToast';
 
 // ── constants ──────────────────────────────────────────────────
 const ANGLES = ['Wide', 'Medium', 'Close-up', 'Extreme Close-up', 'Low Angle', 'High Angle', 'Aerial', 'Dutch Angle', 'POV', 'Over Shoulder'];
@@ -27,12 +28,6 @@ function statusStyle(s: string) {
     const m: any = { completed: { bg: '#d1fae5', c: '#065f46' }, processing: { bg: '#fef3c7', c: '#92400e' }, ready: { bg: '#dbeafe', c: '#1e40af' }, failed: { bg: '#fee2e2', c: '#991b1b' } };
     return m[s] ?? { bg: '#f1f5f9', c: '#64748b' };
 }
-function useToast() {
-    const [t, setT] = useState<{ msg: string; err?: boolean } | null>(null);
-    const show = useCallback((msg: string, err = false) => { setT({ msg, err }); setTimeout(() => setT(null), 3000); }, []);
-    return { t, show };
-}
-
 function isSafeUrl(url: string) {
     if (!url) return false;
     if (url.startsWith('data:')) return true;
@@ -658,7 +653,7 @@ function EpisodeForm({ episode, nextNumber, loading, onSubmit, onClose }: { epis
 // ══════════════════════════════════════════════════════════════
 export default function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
     const { id } = use(params);
-    const { userProfile, tenantId } = useAuth();
+    const { userProfile, tenantId, loading: authLoading } = useAuth();
     const { t: toast, show: notify } = useToast();
     const [project, setProject] = useState<ProjectRead | null>(null);
     const [scenes, setScenes] = useState<SceneRead[]>([]);
@@ -694,16 +689,30 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     const shotRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
     const loadShotsFor = useCallback(async (sceneId: string) => {
-        if (!tenantId || sceneShots[sceneId] || loadingShots[sceneId]) return;
-        setLoadingShots(p => ({ ...p, [sceneId]: true }));
-        try { const s = await shotService.listByScene(sceneId, tenantId); setSceneShots(p => ({ ...p, [sceneId]: s.sort((a, b) => a.shot_order - b.shot_order) })); }
-        catch { setSceneShots(p => ({ ...p, [sceneId]: [] })); }
-        finally { setLoadingShots(p => ({ ...p, [sceneId]: false })); }
-    }, [sceneShots, loadingShots, tenantId]);
+        if (!tenantId) return;
+        // Use functional state updates to avoid dependency on sceneShots/loadingShots
+        setLoadingShots(p => {
+            if (p[sceneId]) return p;
+            (async () => {
+                try {
+                    const s = await shotService.listByScene(sceneId, tenantId);
+                    setSceneShots(prev => ({ ...prev, [sceneId]: s.sort((a, b) => a.shot_order - b.shot_order) }));
+                } catch (err) {
+                    console.error('Failed to load shots:', err);
+                    setSceneShots(prev => ({ ...prev, [sceneId]: [] }));
+                } finally {
+                    setLoadingShots(prev => ({ ...prev, [sceneId]: false }));
+                }
+            })();
+            return { ...p, [sceneId]: true };
+        });
+    }, [tenantId]);
 
     const pickScene = useCallback((sid: string) => { setSelectedSceneId(sid); setActiveShot(null); loadShotsFor(sid); }, [loadShotsFor]);
 
     useEffect(() => {
+        if (authLoading) return; // Keep loading true while auth is initializing
+
         if (!tenantId) {
             setLoading(false);
             return;
@@ -751,7 +760,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             }
             finally { setLoading(false); }
         })();
-    }, [id, tenantId, pickScene]);
+    }, [id, tenantId, authLoading, pickScene]);
 
     const handleSceneSubmit = async (data: Omit<SceneCreate, 'project_id'>) => {
         setMutating(true);

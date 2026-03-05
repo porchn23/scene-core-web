@@ -334,10 +334,13 @@ export default function ProjectsPage() {
 
     // ---- Load data ----
     const reload = useCallback(async () => {
+        if (authLoading) return; // Don't run while still initializing auth
+
         if (!user?.id || !tenantId) {
             setLoading(false);
             return;
         }
+
         setLoading(true);
         setApiError('');
         try {
@@ -353,7 +356,7 @@ export default function ProjectsPage() {
         } finally {
             setLoading(false);
         }
-    }, [user?.id, tenantId]);
+    }, [user?.id, tenantId, authLoading]);
 
     useEffect(() => {
         reload();

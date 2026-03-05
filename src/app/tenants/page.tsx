@@ -10,7 +10,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
 
 export default function TenantsPage() {
-    const { user } = useAuth();
+    const { user, switchTenant } = useAuth();
     const router = useRouter();
     const [tenants, setTenants] = useState<Tenant[]>([]);
     const [loading, setLoading] = useState(true);
@@ -35,7 +35,7 @@ export default function TenantsPage() {
     }, [user, loadData]);
 
     const createTenant = async () => {
-        if (!newName.trim() || !user?.email) return;
+        if (!newName.trim() || !user?.id) return;
         try {
             await tenantService.create({
                 name: newName,
@@ -62,9 +62,9 @@ export default function TenantsPage() {
     const toggleExpand = async (id: string) => {
         if (expanded === id) { setExpanded(null); return; }
         setExpanded(id);
-        if (!tenantUsers[id]) {
+        if (user?.id && !tenantUsers[id]) {
             try {
-                const users = await userService.listByTenant(id);
+                const users = await userService.listByTenant(id, user.id);
                 setTenantUsers(prev => ({ ...prev, [id]: users as User[] }));
             } catch (e) {
                 console.error(e);
@@ -78,9 +78,27 @@ export default function TenantsPage() {
         try {
             await userService.create({ email: addEmail, tenant_id: tenantId, role: 'member' });
             setAddEmail('');
-            const users = await userService.listByTenant(tenantId);
+            if (!user?.id) throw new Error('User ID required');
+            const users = await userService.listByTenant(tenantId, user.id);
             setTenantUsers(prev => ({ ...prev, [tenantId]: users as User[] }));
         } catch (e) { console.error(e); }
+    };
+
+    const removeUserFromTenant = async (tenantId: string, memberId: string, isOwner: boolean) => {
+        if (isOwner) {
+            alert('Cannot remove the studio owner.');
+            return;
+        }
+        if (!confirm('Remove this member from the studio?')) return;
+        try {
+            await userService.removeFromTenant(tenantId, memberId);
+            if (!user?.id) throw new Error('User ID required');
+            const users = await userService.listByTenant(tenantId, user.id);
+            setTenantUsers(prev => ({ ...prev, [tenantId]: users as User[] }));
+        } catch (e) {
+            console.error('Error removing member:', e);
+            alert('Failed to remove member.');
+        }
     };
 
     const handleAddApiKey = async (tenant: Tenant) => {
@@ -103,9 +121,9 @@ export default function TenantsPage() {
             }
 
             const updatedKeys = { ...(tenant.api_keys || {}), [keyName]: finalValue };
-            await tenantService.update(tenant.id, { api_keys: updatedKeys });
+            await tenantService.update(tenant.id, { api_keys: updatedKeys }, user!.id);
             setNewApiKeys(prev => ({ ...prev, [tenant.id]: { keyName: '', keyValue: '' } }));
-            if (user?.email) loadData(user.email);
+            if (user?.id) loadData(user.id);
         } catch (e) {
             console.error(e);
             alert('Failed to add API key.');
@@ -117,8 +135,8 @@ export default function TenantsPage() {
         try {
             const updatedKeys = { ...tenant.api_keys };
             delete updatedKeys[keyToRemove];
-            await tenantService.update(tenant.id, { api_keys: updatedKeys });
-            if (user?.email) loadData(user.email);
+            await tenantService.update(tenant.id, { api_keys: updatedKeys }, user!.id);
+            if (user?.id) loadData(user.id);
         } catch (e) {
             console.error(e);
         }
@@ -177,11 +195,14 @@ export default function TenantsPage() {
                                                 Plan: {t.plan.toUpperCase()} · Credits: {t.credit_balance.toLocaleString()} · {t.is_active ? '🟢 Active' : '🔴 Inactive'}
                                             </div>
                                             <button
-                                                onClick={(e) => {
+                                                onClick={async (e) => {
                                                     e.stopPropagation();
-                                                    // In a real app, logic to switch tenant would go here
-                                                    // For now, this just updates user record or sets context
-                                                    alert('Switching to this studio...');
+                                                    try {
+                                                        await switchTenant(t.id);
+                                                        router.push('/dashboard');
+                                                    } catch (err: any) {
+                                                        alert(err.message);
+                                                    }
                                                 }}
                                                 style={{ marginTop: 4, padding: '2px 8px', fontSize: 10, background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}
                                             >
@@ -189,81 +210,110 @@ export default function TenantsPage() {
                                             </button>
                                         </div>
                                         <span style={{ fontSize: 14, color: 'var(--color-text-tertiary)' }}>{expanded === t.id ? '▲' : '▼'}</span>
-                                        <button onClick={e => { e.stopPropagation(); deleteTenant(t.id); }} style={{ fontSize: 14, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-danger)', opacity: 0.5 }}>🗑</button>
+                                        {user?.id === t.owner_id && (
+                                            <button onClick={e => { e.stopPropagation(); deleteTenant(t.id); }} style={{ fontSize: 14, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-danger)', opacity: 0.5 }}>🗑</button>
+                                        )}
                                     </div>
                                     {expanded === t.id && (
                                         <div style={{ padding: '0 20px 16px', borderTop: '1px solid var(--color-border)' }}>
-                                            <div style={{ fontSize: 11, fontWeight: 700, margin: '12px 0 8px', color: 'var(--color-text-secondary)' }}>👥 Team Members</div>
-                                            {(tenantUsers[t.id] || []).length === 0 ? (
-                                                <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', padding: '8px 0' }}>No members yet</div>
+                                            {(!t.owner_id || user?.id !== t.owner_id) ? (
+                                                <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--color-text-tertiary)', fontSize: 12 }}>
+                                                    🔒 Only the Studio Owner can view and manage team members and API settings.
+                                                </div>
                                             ) : (
-                                                (tenantUsers[t.id] || []).map(u => (
-                                                    <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 12 }}>
-                                                        <span>📧</span> {u.email} <span style={{ fontSize: 10, color: '#6366f1', background: '#eef2ff', padding: '1px 6px', borderRadius: 4 }}>{u.role}</span>
-                                                    </div>
-                                                ))
-                                            )}
-                                            <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                                                <input className="form-input" value={addEmail} onChange={e => setAddEmail(e.target.value)} placeholder="email@example.com" style={{ flex: 1, fontSize: 11 }} />
-                                                <button className="btn btn-primary btn-sm" onClick={() => addUserToTenant(t.id)}>+ Add</button>
-                                            </div>
+                                                <>
+                                                    <div style={{ fontSize: 11, fontWeight: 700, margin: '12px 0 8px', color: 'var(--color-text-secondary)' }}>👥 Team Members</div>
+                                                    {(tenantUsers[t.id] || []).length === 0 ? (
+                                                        <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', padding: '8px 0' }}>No members yet</div>
+                                                    ) : (
+                                                        (tenantUsers[t.id] || []).map((u, index) => (
+                                                            <div key={u?.id || `user-${index}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', fontSize: 12, borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                                    <span>📧</span> <span style={{ color: '#e4e4e7' }}>{u?.email || 'Unknown User'}</span>
+                                                                    <span style={{ fontSize: 10, color: '#6366f1', background: '#eef2ff', padding: '1px 6px', borderRadius: 4 }}>{u?.role || 'member'}</span>
+                                                                </div>
 
-                                            <div style={{ marginTop: 20 }}>
-                                                <div style={{ fontSize: 11, fontWeight: 700, margin: '12px 0 8px', color: 'var(--color-text-secondary)' }}>🔑 API Keys (AI Services)</div>
-                                                {Object.keys(t.api_keys || {}).length === 0 ? (
-                                                    <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', padding: '8px 0' }}>No API keys configured yet</div>
-                                                ) : (
-                                                    Object.entries(t.api_keys || {}).map(([keyName, keyValue]) => (
-                                                        <div key={keyName} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 0', fontSize: 12, borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                                                            <div style={{ fontWeight: 600, color: '#e4e4e7', minWidth: 80, paddingTop: 2 }}>{keyName}</div>
-                                                            <div style={{ flex: 1 }}>
-                                                                {typeof keyValue === 'object' && keyValue !== null ? (
-                                                                    <pre style={{ margin: 0, padding: '4px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: 4, fontFamily: 'monospace', color: '#a1a1aa', fontSize: 10, overflowX: 'auto' }}>
-                                                                        {JSON.stringify(keyValue, null, 2)}
-                                                                    </pre>
-                                                                ) : (
-                                                                    <div style={{ fontFamily: 'monospace', color: 'var(--color-text-tertiary)' }}>
-                                                                        {typeof keyValue === 'string' ? `${keyValue.substring(0, 8)}...${keyValue.slice(-8)}` : '***'}
-                                                                    </div>
+                                                                {u?.role !== 'owner' && (
+                                                                    <button
+                                                                        onClick={() => removeUserFromTenant(t.id, u.id, u.role === 'owner')}
+                                                                        style={{
+                                                                            background: 'none', border: 'none', color: 'var(--color-danger)',
+                                                                            cursor: 'pointer', opacity: 0.5, fontSize: 12, padding: '2px 6px',
+                                                                            transition: 'opacity 0.2s'
+                                                                        }}
+                                                                        onMouseEnter={e => e.currentTarget.style.opacity = '1'}
+                                                                        onMouseLeave={e => e.currentTarget.style.opacity = '0.5'}
+                                                                        title="Remove Member"
+                                                                    >
+                                                                        ✕
+                                                                    </button>
                                                                 )}
                                                             </div>
-                                                            <button onClick={() => handleRemoveApiKey(t, keyName)} style={{ background: 'none', border: 'none', color: 'var(--color-danger)', cursor: 'pointer', opacity: 0.6, fontSize: 12, paddingTop: 2 }}>✕</button>
-                                                        </div>
-                                                    ))
-                                                )}
+                                                        ))
+                                                    )}
+                                                    <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                                                        <input className="form-input" value={addEmail} onChange={e => setAddEmail(e.target.value)} placeholder="email@example.com" style={{ flex: 1, fontSize: 11 }} />
+                                                        <button className="btn btn-primary btn-sm" onClick={() => addUserToTenant(t.id)}>+ Add</button>
+                                                    </div>
 
-                                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12, padding: 12, background: 'rgba(255,255,255,0.02)', borderRadius: 8, border: '1px solid rgba(255,255,255,0.05)' }}>
-                                                    <div style={{ display: 'flex', gap: 8 }}>
-                                                        <select className="form-input" value={newApiKeys[t.id]?.keyName || ''} onChange={e => setNewApiKeys(prev => ({ ...prev, [t.id]: { ...prev[t.id], keyName: e.target.value } }))} style={{ width: 150, fontSize: 11 }}>
-                                                            <option value="" disabled>Select AI Service</option>
-                                                            <option value="gemini">Gemini</option>
-                                                            <option value="openai">OpenAI</option>
-                                                            <option value="kling">Kling</option>
-                                                            <option value="runway">Runway</option>
-                                                            <option value="anthropic">Anthropic</option>
-                                                            <option value="luma_dreammachine">Luma Dream Machine</option>
-                                                            <option value="elevenlabs">ElevenLabs</option>
-                                                            <option value="minimax">Minimax</option>
-                                                            <option value="leonardo_ai">Leonardo AI</option>
-                                                            <option value="aws_s3">AWS S3</option>
-                                                            <option value="custom">Custom Service...</option>
-                                                        </select>
-                                                        {newApiKeys[t.id]?.keyName === 'custom' && (
-                                                            <input className="form-input" placeholder="Service Name" onChange={e => setNewApiKeys(prev => ({ ...prev, [t.id]: { ...prev[t.id], keyName: e.target.value } }))} style={{ flex: 1, fontSize: 11 }} />
+                                                    <div style={{ marginTop: 20 }}>
+                                                        <div style={{ fontSize: 11, fontWeight: 700, margin: '12px 0 8px', color: 'var(--color-text-secondary)' }}>🔑 API Keys (AI Services)</div>
+                                                        {Object.keys(t.api_keys || {}).length === 0 ? (
+                                                            <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', padding: '8px 0' }}>No API keys configured yet</div>
+                                                        ) : (
+                                                            Object.entries(t.api_keys || {}).map(([keyName, keyValue]) => (
+                                                                <div key={keyName} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 0', fontSize: 12, borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                                                                    <div style={{ fontWeight: 600, color: '#e4e4e7', minWidth: 80, paddingTop: 2 }}>{keyName}</div>
+                                                                    <div style={{ flex: 1 }}>
+                                                                        {typeof keyValue === 'object' && keyValue !== null ? (
+                                                                            <pre style={{ margin: 0, padding: '4px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: 4, fontFamily: 'monospace', color: '#a1a1aa', fontSize: 10, overflowX: 'auto' }}>
+                                                                                {JSON.stringify(keyValue, null, 2)}
+                                                                            </pre>
+                                                                        ) : (
+                                                                            <div style={{ fontFamily: 'monospace', color: 'var(--color-text-tertiary)' }}>
+                                                                                {typeof keyValue === 'string' ? `${keyValue.substring(0, 8)}...${keyValue.slice(-8)}` : '***'}
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                    <button onClick={() => handleRemoveApiKey(t, keyName)} style={{ background: 'none', border: 'none', color: 'var(--color-danger)', cursor: 'pointer', opacity: 0.6, fontSize: 12, paddingTop: 2 }}>✕</button>
+                                                                </div>
+                                                            ))
                                                         )}
+
+                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12, padding: 12, background: 'rgba(255,255,255,0.02)', borderRadius: 8, border: '1px solid rgba(255,255,255,0.05)' }}>
+                                                            <div style={{ display: 'flex', gap: 8 }}>
+                                                                <select className="form-input" value={newApiKeys[t.id]?.keyName || ''} onChange={e => setNewApiKeys(prev => ({ ...prev, [t.id]: { ...prev[t.id], keyName: e.target.value } }))} style={{ width: 150, fontSize: 11 }}>
+                                                                    <option value="" disabled>Select AI Service</option>
+                                                                    <option value="gemini">Gemini</option>
+                                                                    <option value="openai">OpenAI</option>
+                                                                    <option value="kling">Kling</option>
+                                                                    <option value="runway">Runway</option>
+                                                                    <option value="anthropic">Anthropic</option>
+                                                                    <option value="luma_dreammachine">Luma Dream Machine</option>
+                                                                    <option value="elevenlabs">ElevenLabs</option>
+                                                                    <option value="minimax">Minimax</option>
+                                                                    <option value="leonardo_ai">Leonardo AI</option>
+                                                                    <option value="aws_s3">AWS S3</option>
+                                                                    <option value="custom">Custom Service...</option>
+                                                                </select>
+                                                                {newApiKeys[t.id]?.keyName === 'custom' && (
+                                                                    <input className="form-input" placeholder="Service Name" onChange={e => setNewApiKeys(prev => ({ ...prev, [t.id]: { ...prev[t.id], keyName: e.target.value } }))} style={{ flex: 1, fontSize: 11 }} />
+                                                                )}
+                                                            </div>
+                                                            <textarea
+                                                                className="form-input"
+                                                                value={newApiKeys[t.id]?.keyValue || ''}
+                                                                onChange={e => setNewApiKeys(prev => ({ ...prev, [t.id]: { ...prev[t.id], keyValue: e.target.value } }))}
+                                                                placeholder='Paste API Key string OR JSON Object, e.g. {"api_key": "...", "secret_key": "..."}'
+                                                                style={{ width: '100%', height: 80, fontSize: 11, fontFamily: 'monospace', resize: 'vertical' }}
+                                                            />
+                                                            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                                                <button className="btn btn-primary btn-sm" onClick={() => handleAddApiKey(t)}>+ Save API Config</button>
+                                                            </div>
+                                                        </div>
                                                     </div>
-                                                    <textarea
-                                                        className="form-input"
-                                                        value={newApiKeys[t.id]?.keyValue || ''}
-                                                        onChange={e => setNewApiKeys(prev => ({ ...prev, [t.id]: { ...prev[t.id], keyValue: e.target.value } }))}
-                                                        placeholder='Paste API Key string OR JSON Object, e.g. {"api_key": "...", "secret_key": "..."}'
-                                                        style={{ width: '100%', height: 80, fontSize: 11, fontFamily: 'monospace', resize: 'vertical' }}
-                                                    />
-                                                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                                                        <button className="btn btn-primary btn-sm" onClick={() => handleAddApiKey(t)}>+ Save API Config</button>
-                                                    </div>
-                                                </div>
-                                            </div>
+                                                </>
+                                            )}
                                         </div>
                                     )}
                                 </div>
