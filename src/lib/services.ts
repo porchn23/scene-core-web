@@ -7,6 +7,79 @@ const validateUUID = (id: any, name: string) => {
     }
 };
 
+// ===================== ACTIVITY LOG =====================
+export interface ActivityLogRead {
+    id: string;
+    tenant_id: string;
+    project_id?: string | null;
+    user_id?: string | null;
+    action: string;
+    entity_type: string;
+    entity_id?: string | null;
+    details: Record<string, any>;
+    created_at: string;
+}
+
+export const activityLogService = {
+    log: async (params: {
+        tenantId: string;
+        userId?: string;
+        projectId?: string;
+        action: string;
+        entityType: string;
+        entityId?: string;
+        details?: Record<string, any>;
+    }) => {
+        try {
+            // Get user profile ID from auth ID
+            let validUserId = null;
+            if (params.userId) {
+                const { data: userProfile } = await supabase
+                    .from('users')
+                    .select('id')
+                    .eq('auth_id', params.userId)
+                    .maybeSingle();
+                validUserId = userProfile?.id || null;
+            }
+            
+            const { error } = await supabase.rpc('insert_activity_log', {
+                p_tenant_id: params.tenantId,
+                p_action: params.action,
+                p_entity_type: params.entityType,
+                p_user_id: validUserId,
+                p_project_id: params.projectId,
+                p_entity_id: params.entityId,
+                p_details: params.details || {}
+            });
+            if (error) console.error('Activity log error:', error);
+        } catch (e) {
+            console.error('Activity log exception:', e);
+        }
+    },
+
+    list: async (tenantId: string, options?: {
+        projectId?: string;
+        userId?: string;
+        entityType?: string;
+        limit?: number;
+    }): Promise<ActivityLogRead[]> => {
+        let query = supabase
+            .from('activity_logs')
+            .select('*')
+            .eq('tenant_id', tenantId)
+            .order('created_at', { ascending: false });
+
+        if (options?.projectId) query = query.eq('project_id', options.projectId);
+        if (options?.userId) query = query.eq('user_id', options.userId);
+        if (options?.entityType) query = query.eq('entity_type', options.entityType);
+        if (options?.limit) query = query.limit(options.limit);
+
+        const { data, error } = await query;
+        if (error) throw new Error(error.message);
+        return data as ActivityLogRead[];
+    }
+};
+
 // ===================== PROJECTS =====================
 export interface ProjectRead {
     id: string;
@@ -78,24 +151,48 @@ export const projectService = {
     },
 
     /** Create project */
-    create: async (payload: ProjectCreate, tenantId: string): Promise<ProjectRead> => {
+    create: async (payload: ProjectCreate, tenantId: string, userId?: string): Promise<ProjectRead> => {
         validateUUID(tenantId, 'Tenant ID');
         const { data, error } = await supabase.from('projects').insert({ ...payload, tenant_id: tenantId }).select().single();
         if (error) throw new Error(error.message);
+        
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: data.id,
+            action: 'create',
+            entityType: 'project',
+            entityId: data.id,
+            details: { name: data.name, aspect_ratio: data.aspect_ratio }
+        });
+        
         return data as ProjectRead;
     },
 
     /** Update project */
-    update: async (id: string, payload: ProjectUpdate, tenantId: string): Promise<ProjectRead> => {
+    update: async (id: string, payload: ProjectUpdate, tenantId: string, userId?: string): Promise<ProjectRead> => {
         validateUUID(id, 'Project ID');
         validateUUID(tenantId, 'Tenant ID');
         const { data, error } = await supabase.from('projects').update(payload).eq('id', id).eq('tenant_id', tenantId).select().single();
         if (error) throw new Error(error.message);
+        
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: id,
+            action: 'update',
+            entityType: 'project',
+            entityId: id,
+            details: payload
+        });
+        
         return data as ProjectRead;
     },
 
     /** Delete project */
-    delete: async (id: string, tenantId: string): Promise<void> => {
+    delete: async (id: string, tenantId: string, userId?: string): Promise<void> => {
         validateUUID(id, 'Project ID');
         validateUUID(tenantId, 'Tenant ID');
 
@@ -135,6 +232,17 @@ export const projectService = {
 
         const { error } = await supabase.from('projects').delete().eq('id', id).eq('tenant_id', tenantId);
         if (error) throw new Error(error.message);
+        
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: id,
+            action: 'delete',
+            entityType: 'project',
+            entityId: id,
+            details: { deleted: true }
+        });
     },
 };
 
@@ -307,7 +415,7 @@ export const sceneService = {
         return data as SceneRead[];
     },
 
-    create: async (payload: SceneCreate, tenantId: string): Promise<SceneRead> => {
+    create: async (payload: SceneCreate, tenantId: string, userId?: string): Promise<SceneRead> => {
         // Verify project belongs to tenant
         const { count } = await supabase.from('projects').select('*', { count: 'exact', head: true }).eq('id', payload.project_id).eq('tenant_id', tenantId);
         if (!count) throw new Error('Unauthorized');
@@ -318,10 +426,21 @@ export const sceneService = {
         // After creation, sync orders
         await sceneService.syncSceneOrders(payload.project_id, tenantId);
 
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: payload.project_id,
+            action: 'create',
+            entityType: 'scene',
+            entityId: data.id,
+            details: { scene_order: data.scene_order, title: data.title }
+        });
+
         return data as SceneRead;
     },
 
-    update: async (id: string, payload: SceneUpdate, tenantId: string): Promise<SceneRead> => {
+    update: async (id: string, payload: SceneUpdate, tenantId: string, userId?: string): Promise<SceneRead> => {
         // Verify ownership through project join
         const { data: original } = await supabase.from('scenes')
             .select('project_id, projects!inner(*)')
@@ -337,10 +456,21 @@ export const sceneService = {
             await sceneService.syncSceneOrders(original.project_id, tenantId);
         }
 
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: original.project_id,
+            action: 'update',
+            entityType: 'scene',
+            entityId: id,
+            details: payload
+        });
+
         return data as SceneRead;
     },
 
-    delete: async (id: string, tenantId: string): Promise<void> => {
+    delete: async (id: string, tenantId: string, userId?: string): Promise<void> => {
         validateUUID(id, 'Scene ID');
         validateUUID(tenantId, 'Tenant ID');
         const { data: original } = await supabase.from('scenes').select('project_id, projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
@@ -350,7 +480,7 @@ export const sceneService = {
         const { data: shots } = await supabase.from('shots').select('id').eq('scene_id', id);
         if (shots && shots.length > 0) {
             for (const shot of shots) {
-                await shotService.delete(shot.id, tenantId);
+                await shotService.delete(shot.id, tenantId, userId);
             }
         }
 
@@ -358,6 +488,17 @@ export const sceneService = {
         if (error) throw new Error(error.message);
 
         await sceneService.syncSceneOrders(original.project_id, tenantId);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: original.project_id,
+            action: 'delete',
+            entityType: 'scene',
+            entityId: id,
+            details: { deleted: true }
+        });
     },
 
     syncSceneOrders: async (projectId: string, tenantId: string): Promise<void> => {
@@ -417,42 +558,79 @@ export const episodeService = {
         return data as EpisodeRead[];
     },
 
-    create: async (payload: EpisodeCreate, tenantId: string): Promise<EpisodeRead> => {
+    create: async (payload: EpisodeCreate, tenantId: string, userId?: string): Promise<EpisodeRead> => {
         const { count } = await supabase.from('projects').select('*', { count: 'exact', head: true }).eq('id', payload.project_id).eq('tenant_id', tenantId);
         if (!count) throw new Error('Unauthorized');
 
         const { data, error } = await supabase.from('episodes').insert(payload).select().single();
         if (error) throw new Error(error.message);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: payload.project_id,
+            action: 'create',
+            entityType: 'episode',
+            entityId: data.id,
+            details: { episode_number: data.episode_number, title: data.title }
+        });
+
         return data as EpisodeRead;
     },
 
-    update: async (id: string, payload: EpisodeUpdate, tenantId: string): Promise<EpisodeRead> => {
-        validateUUID(id, 'Episode ID');
-        validateUUID(tenantId, 'Tenant ID');
-        const { data: original } = await supabase.from('episodes').select('projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
-        if (!original) throw new Error('Unauthorized');
-
-        const { data, error } = await supabase.from('episodes').update(payload).eq('id', id).select().single();
-        if (error) throw new Error(error.message);
-        return data as EpisodeRead;
-    },
-
-    delete: async (id: string, tenantId: string): Promise<void> => {
+    update: async (id: string, payload: EpisodeUpdate, tenantId: string, userId?: string): Promise<EpisodeRead> => {
         validateUUID(id, 'Episode ID');
         validateUUID(tenantId, 'Tenant ID');
         const { data: original } = await supabase.from('episodes').select('project_id, projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
         if (!original) throw new Error('Unauthorized');
 
+        const { data, error } = await supabase.from('episodes').update(payload).eq('id', id).select().single();
+        if (error) throw new Error(error.message);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: original.project_id,
+            action: 'update',
+            entityType: 'episode',
+            entityId: id,
+            details: payload
+        });
+
+        return data as EpisodeRead;
+    },
+
+    delete: async (id: string, tenantId: string, userId?: string): Promise<void> => {
+        validateUUID(id, 'Episode ID');
+        validateUUID(tenantId, 'Tenant ID');
+        const { data: original } = await supabase.from('episodes').select('project_id, projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
+        if (!original) throw new Error('Unauthorized');
+
+        const projectId = original.project_id;
+
         // Delete all scenes in this episode manually to ensure all dependencies are cleared
         const { data: scenes } = await supabase.from('scenes').select('id').eq('episode_id', id);
         if (scenes && scenes.length > 0) {
             for (const sc of scenes) {
-                await sceneService.delete(sc.id, tenantId);
+                await sceneService.delete(sc.id, tenantId, userId);
             }
         }
 
         const { error } = await supabase.from('episodes').delete().eq('id', id);
         if (error) throw new Error(error.message);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId,
+            action: 'delete',
+            entityType: 'episode',
+            entityId: id,
+            details: { deleted: true }
+        });
     },
 };
 
@@ -521,29 +699,56 @@ export const shotService = {
         return data as ShotRead[];
     },
 
-    create: async (payload: ShotCreate, tenantId: string): Promise<ShotRead> => {
+    create: async (payload: ShotCreate, tenantId: string, userId?: string): Promise<ShotRead> => {
         const { data: scene } = await supabase.from('scenes').select('project_id, projects!inner(*)').eq('id', payload.scene_id).eq('projects.tenant_id', tenantId).single();
         if (!scene) throw new Error('Unauthorized');
 
         const { data, error } = await supabase.from('shots').insert(payload).select().single();
         if (error) throw new Error(error.message);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: scene.project_id,
+            action: 'create',
+            entityType: 'shot',
+            entityId: data.id,
+            details: { shot_order: data.shot_order }
+        });
+
         return data as ShotRead;
     },
 
-    update: async (id: string, payload: ShotUpdate, tenantId: string): Promise<ShotRead> => {
+    update: async (id: string, payload: ShotUpdate, tenantId: string, userId?: string): Promise<ShotRead> => {
         const { data: original } = await supabase.from('shots').select('scenes!inner(project_id, projects!inner(*))').eq('id', id).eq('scenes.projects.tenant_id', tenantId).single();
         if (!original) throw new Error('Unauthorized');
 
         const { data, error } = await supabase.from('shots').update(payload).eq('id', id).select().single();
         if (error) throw new Error(error.message);
+
+        // Log activity
+        const shotProjectId = (original.scenes as any)?.project_id;
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: shotProjectId,
+            action: 'update',
+            entityType: 'shot',
+            entityId: id,
+            details: payload
+        });
+
         return data as ShotRead;
     },
 
-    delete: async (id: string, tenantId: string): Promise<void> => {
+    delete: async (id: string, tenantId: string, userId?: string): Promise<void> => {
         validateUUID(id, 'Shot ID');
         validateUUID(tenantId, 'Tenant ID');
-        const { data: original } = await supabase.from('shots').select('scenes!inner(project_id, projects!inner(*))').eq('id', id).eq('scenes.projects.tenant_id', tenantId).single();
+        const { data: original } = await supabase.from('shots').select('scene_id, scenes(project_id)').eq('id', id).single();
         if (!original) throw new Error('Unauthorized');
+
+        const projectId = (original.scenes as any)?.project_id;
 
         // Circular reference cleanup
         await supabase.from('shots').update({ selected_generation_id: null }).eq('id', id);
@@ -555,18 +760,69 @@ export const shotService = {
 
         const { error } = await supabase.from('shots').delete().eq('id', id);
         if (error) throw new Error(error.message);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId,
+            action: 'delete',
+            entityType: 'shot',
+            entityId: id,
+            details: { deleted: true }
+        });
     },
 
-    generate: async (shotId: string, projectId: string, sceneId: string, tenantId: string, type: 'video' | 'image' = 'video'): Promise<unknown> => {
-        // Verify ownership
+    generate: async (shotId: string, projectId: string, sceneId: string, tenantId: string, type: 'video' | 'image' = 'video', provider: 'runway' | 'pika' | 'kling' | 'luma' = 'runway'): Promise<unknown> => {
+        validateUUID(shotId, 'Shot ID');
+        validateUUID(projectId, 'Project ID');
+        validateUUID(tenantId, 'Tenant ID');
+
+        // 1. Verify ownership
         const { count } = await supabase.from('projects').select('*', { count: 'exact', head: true }).eq('id', projectId).eq('tenant_id', tenantId);
         if (!count) throw new Error('Unauthorized');
 
+        // 2. Get shot data for prompt building
+        const { data: shot } = await supabase.from('shots').select('*').eq('id', shotId).single();
+        if (!shot) throw new Error('Shot not found');
+
+        // 3. Check credits
+        const { data: tenant, error: tenantErr } = await supabase.from('tenants').select('credit_balance').eq('id', tenantId).single();
+        if (tenantErr) throw new Error(tenantErr.message);
+
+        const cost = type === 'video' ? 10 : 2;
+        if ((tenant?.credit_balance ?? 0) < cost) {
+            throw new Error(`Insufficient credits. Need ${cost} credits, have ${tenant?.credit_balance ?? 0}`);
+        }
+
+        // 4. Deduct credits first
+        const { error: deductErr } = await supabase.rpc('deduct_credits', { p_amount: cost, p_tenant_id: tenantId });
+        if (deductErr) {
+            throw new Error('Failed to deduct credits: ' + deductErr.message);
+        }
+
+        // 5. Create render job with provider
+        const jobType = type === 'image' ? 'render_image' : 'render_video';
         const { data: job, error: jobErr } = await supabase.from('render_jobs').insert({
-            shot_id: shotId, project_id: projectId, scene_id: sceneId, status: 'pending', job_type: type === 'image' ? 'render_image' : 'render_video'
+            shot_id: shotId,
+            project_id: projectId,
+            scene_id: sceneId,
+            status: 'pending',
+            job_type: jobType,
+            provider: provider,
         }).select().single();
-        if (jobErr) throw new Error(jobErr.message);
+        if (jobErr) {
+            // Rollback credits if job creation fails
+            await supabase.rpc('add_credits', { p_amount: cost, p_tenant_id: tenantId });
+            throw new Error(jobErr.message);
+        }
+
+        // 6. Update shot status to processing
         await supabase.from('shots').update({ status: 'processing' }).eq('id', shotId);
+
+        // 7. NOTIFY worker immediately (instead of polling)
+        await supabase.rpc('notify_new_job', { p_job_id: job.id });
+
         return job;
     },
 };
@@ -609,7 +865,7 @@ export const characterService = {
         if (error) throw new Error(error.message);
         return data as CharacterRead[];
     },
-    create: async (payload: CharacterCreate, tenantId: string): Promise<CharacterRead> => {
+    create: async (payload: CharacterCreate, tenantId: string, userId?: string): Promise<CharacterRead> => {
         validateUUID(tenantId, 'Tenant ID');
         validateUUID(payload.project_id, 'Project ID');
         const { count } = await supabase.from('projects').select('*', { count: 'exact', head: true }).eq('id', payload.project_id).eq('tenant_id', tenantId);
@@ -617,29 +873,66 @@ export const characterService = {
 
         const { data, error } = await supabase.from('characters').insert(payload).select().single();
         if (error) throw new Error(error.message);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: payload.project_id,
+            action: 'create',
+            entityType: 'character',
+            entityId: data.id,
+            details: { name: data.name }
+        });
+
         return data as CharacterRead;
     },
-    update: async (id: string, payload: CharacterUpdate, tenantId: string): Promise<CharacterRead> => {
+    update: async (id: string, payload: CharacterUpdate, tenantId: string, userId?: string): Promise<CharacterRead> => {
         validateUUID(id, 'Character ID');
         validateUUID(tenantId, 'Tenant ID');
-        const { data: original } = await supabase.from('characters').select('projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
+        const { data: original } = await supabase.from('characters').select('project_id, projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
         if (!original) throw new Error('Unauthorized');
 
         const { data, error } = await supabase.from('characters').update(payload).eq('id', id).select().single();
         if (error) throw new Error(error.message);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: original.project_id,
+            action: 'update',
+            entityType: 'character',
+            entityId: id,
+            details: payload
+        });
+
         return data as CharacterRead;
     },
-    delete: async (id: string, tenantId: string): Promise<void> => {
+    delete: async (id: string, tenantId: string, userId?: string): Promise<void> => {
         validateUUID(id, 'Character ID');
         validateUUID(tenantId, 'Tenant ID');
-        const { data: original } = await supabase.from('characters').select('projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
+        const { data: original } = await supabase.from('characters').select('project_id, projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
         if (!original) throw new Error('Unauthorized');
+
+        const projectId = original.project_id;
 
         // L-2: Clear FK reference from shot_dialogues before deleting character
         await supabase.from('shot_dialogues').update({ character_id: null }).eq('character_id', id);
 
         const { error } = await supabase.from('characters').delete().eq('id', id);
         if (error) throw new Error(error.message);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId,
+            action: 'delete',
+            entityType: 'character',
+            entityId: id,
+            details: { deleted: true }
+        });
     },
 };
 
@@ -719,7 +1012,7 @@ export const actorService = {
         if (error) throw new Error(error.message);
         return data as ActorRead[];
     },
-    create: async (payload: ActorCreate, tenantId: string): Promise<ActorRead> => {
+    create: async (payload: ActorCreate, tenantId: string, userId?: string): Promise<ActorRead> => {
         validateUUID(tenantId, 'Tenant ID');
         const body = {
             ...payload,
@@ -728,9 +1021,20 @@ export const actorService = {
         };
         const { data, error } = await supabase.from('actors').insert(body).select().single();
         if (error) throw new Error(error.message);
+
+        // Log activity (no project_id for actors)
+        await activityLogService.log({
+            tenantId,
+            userId,
+            action: 'create',
+            entityType: 'actor',
+            entityId: data.id,
+            details: { name: data.name }
+        });
+
         return data as ActorRead;
     },
-    update: async (id: string, payload: ActorUpdate, tenantId: string): Promise<ActorRead> => {
+    update: async (id: string, payload: ActorUpdate, tenantId: string, userId?: string): Promise<ActorRead> => {
         validateUUID(id, 'Actor ID');
         validateUUID(tenantId, 'Tenant ID');
         const { data, error } = await supabase.from('actors')
@@ -740,9 +1044,20 @@ export const actorService = {
             .select()
             .single();
         if (error) throw new Error(error.message);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            action: 'update',
+            entityType: 'actor',
+            entityId: id,
+            details: payload
+        });
+
         return data as ActorRead;
     },
-    delete: async (id: string, tenantId: string): Promise<void> => {
+    delete: async (id: string, tenantId: string, userId?: string): Promise<void> => {
         validateUUID(id, 'Actor ID');
         validateUUID(tenantId, 'Tenant ID');
 
@@ -754,6 +1069,16 @@ export const actorService = {
             .eq('id', id)
             .eq('tenant_id', tenantId);
         if (error) throw new Error(error.message);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            action: 'delete',
+            entityType: 'actor',
+            entityId: id,
+            details: { deleted: true }
+        });
     },
     /** Start LoRA Training (Mock/Trigger) */
     train: async (id: string, tenantId: string): Promise<void> => {
@@ -805,33 +1130,70 @@ export const locationService = {
         if (error) throw new Error(error.message);
         return data as LocationRead[];
     },
-    create: async (payload: { project_id: string;[key: string]: any }, tenantId: string): Promise<LocationRead> => {
+    create: async (payload: { project_id: string;[key: string]: any }, tenantId: string, userId?: string): Promise<LocationRead> => {
         const { count } = await supabase.from('projects').select('*', { count: 'exact', head: true }).eq('id', payload.project_id).eq('tenant_id', tenantId);
         if (!count) throw new Error('Unauthorized');
 
         const { data, error } = await supabase.from('locations').insert(payload).select().single();
         if (error) throw new Error(error.message);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: payload.project_id,
+            action: 'create',
+            entityType: 'location',
+            entityId: data.id,
+            details: { name: data.name }
+        });
+
         return data as LocationRead;
     },
-    update: async (id: string, payload: Record<string, unknown>, tenantId: string): Promise<LocationRead> => {
-        const { data: original } = await supabase.from('locations').select('projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
+    update: async (id: string, payload: Record<string, unknown>, tenantId: string, userId?: string): Promise<LocationRead> => {
+        const { data: original } = await supabase.from('locations').select('project_id, projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
         if (!original) throw new Error('Unauthorized');
 
         const { data, error } = await supabase.from('locations').update(payload).eq('id', id).select().single();
         if (error) throw new Error(error.message);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId: original.project_id,
+            action: 'update',
+            entityType: 'location',
+            entityId: id,
+            details: payload
+        });
+
         return data as LocationRead;
     },
-    delete: async (id: string, tenantId: string): Promise<void> => {
+    delete: async (id: string, tenantId: string, userId?: string): Promise<void> => {
         validateUUID(id, 'Location ID');
         validateUUID(tenantId, 'Tenant ID');
-        const { data: original } = await supabase.from('locations').select('projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
+        const { data: original } = await supabase.from('locations').select('project_id, projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
         if (!original) throw new Error('Unauthorized');
+
+        const projectId = original.project_id;
 
         // Remove location assignment from scenes
         await supabase.from('scenes').update({ location_id: null }).eq('location_id', id);
 
         const { error } = await supabase.from('locations').delete().eq('id', id);
         if (error) throw new Error(error.message);
+
+        // Log activity
+        await activityLogService.log({
+            tenantId,
+            userId,
+            projectId,
+            action: 'delete',
+            entityType: 'location',
+            entityId: id,
+            details: { deleted: true }
+        });
     },
 };
 
@@ -855,30 +1217,82 @@ export const userService = {
 
         if (!check && !checkOwner) throw new Error('Unauthorized access to member list');
 
-        // Fetch from tenant_members joining users
-        const { data, error } = await supabase.from('tenant_members').select('user_id, role, users(*)').eq('tenant_id', tenantId);
-        if (error) throw new Error(error.message);
-        console.log('listByTenant raw data:', JSON.stringify(data, null, 2));
+        // Get all tenant members
+        const { data: members, error: membersErr } = await supabase
+            .from('tenant_members')
+            .select('user_id, role, invited_email')
+            .eq('tenant_id', tenantId);
+        if (membersErr) throw new Error(membersErr.message);
+        
+        console.log('members with email:', JSON.stringify(members, null, 2));
 
-        return (data as any[]).map(row => {
-            const rawUser = row.users || row.user;
-            const userObj = Array.isArray(rawUser) ? rawUser[0] : rawUser;
-            return {
-                ...(userObj || {}),
-                id: row.user_id || userObj?.id,
-                role: row.role
+        if (!members || members.length === 0) return [];
+
+        // Get user details for those who have user_id
+        const userIds = members.map(m => m.user_id).filter(Boolean);
+        console.log('tenantId:', tenantId, 'userIds:', userIds);
+        
+        const { data: users } = userIds.length > 0 ? await supabase
+            .from('users')
+            .select('*')
+            .in('id', userIds) : { data: null };
+        
+        console.log('users from DB:', JSON.stringify(users, null, 2));
+
+        const result = members.map(m => {
+            const user = users?.find(u => u.id === m.user_id);
+            const entry: UserRead = {
+                id: m.user_id || m.invited_email,
+                email: user?.email || m.invited_email || (m.user_id ? `ID: ${m.user_id.slice(0, 8)}` : 'Pending'),
+                display_name: user?.display_name,
+                role: m.role,
+                created_at: user?.created_at || new Date().toISOString()
             };
+            if (user?.auth_id) entry.auth_id = user.auth_id;
+            if (user?.avatar_url) entry.avatar_url = user.avatar_url;
+            return entry;
         });
+        
+        return result;
     },
     create: async (payload: { email: string; tenant_id: string; role: string }): Promise<UserRead> => {
-        const { data, error } = await supabase.rpc('invite_user_to_tenant', {
-            _email: payload.email,
-            _tenant_id: payload.tenant_id,
-            _role: payload.role || 'member'
-        });
+        // First check if user exists in users table by email
+        console.log('Looking for user with email:', payload.email);
+        
+        console.log('=== START INVITE ===');
+        console.log('payload:', payload);
+        
+        // Use RPC to find user (bypasses RLS)
+        const { data: rpcResult, error: rpcError } = await supabase
+            .rpc('get_user_by_email', { search_email: payload.email });
+        
+        console.log('rpcResult:', rpcResult);
+        console.log('rpcError:', rpcError);
+        
+        const existingUser = rpcResult && rpcResult.length > 0 ? rpcResult[0] : null;
 
-        if (error) throw new Error(error.message);
-        return { ...data, role: payload.role } as UserRead;
+        if (!existingUser) {
+            throw new Error('User not found with email: ' + payload.email);
+        }
+
+        // User exists, add to tenant_members
+        const { error: insertErr } = await supabase
+            .from('tenant_members')
+            .upsert({
+                tenant_id: payload.tenant_id,
+                user_id: existingUser.id,
+                role: payload.role || 'member',
+                invited_email: payload.email
+            }, { onConflict: 'tenant_id,user_id' });
+
+        if (insertErr) throw new Error(insertErr.message);
+        
+        return {
+            id: existingUser.id,
+            email: payload.email,
+            role: payload.role,
+            created_at: new Date().toISOString()
+        } as UserRead;
     },
     // Leaving update and delete placeholders that might need adjustments if required by the app
     update: async (id: string, payload: Record<string, unknown>): Promise<UserRead> => {

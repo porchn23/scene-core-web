@@ -6,6 +6,7 @@ import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
 import Modal from '@/components/Modal';
 import { projectService, tenantService } from '@/lib/services';
+import { supabase } from '@/lib/supabase';
 import type { ProjectRead, ProjectCreate, ProjectUpdate, TenantRead } from '@/lib/services';
 import { useAuth } from '@/context/AuthContext';
 
@@ -305,6 +306,29 @@ function ConfirmDelete({ open, project, loading, onClose, onConfirm }: {
     );
 }
 
+// ===================== THUMBNAIL FETCHER =====================
+async function fetchProjectThumbnail(projectId: string): Promise<string | null> {
+    try {
+        // shots has scene_id, join with scenes to get project_id
+        const { data } = await supabase
+            .from('shots')
+            .select('preview_image_url, scenes(project_id)')
+            .eq('scenes.project_id', projectId)
+            .not('preview_image_url', 'is', null)
+            .neq('preview_image_url', '')
+            .limit(20);
+        
+        if (data && data.length > 0) {
+            const randomShot = data[Math.floor(Math.random() * data.length)];
+            return randomShot.preview_image_url;
+        }
+        return null;
+    } catch (e) {
+        console.error('Thumbnail fetch error:', e);
+        return null;
+    }
+}
+
 // ===================== MAIN PAGE =====================
 export default function ProjectsPage() {
     const { user, userProfile, tenantId, loading: authLoading } = useAuth();
@@ -312,6 +336,7 @@ export default function ProjectsPage() {
     const [tenants, setTenants] = useState<TenantRead[]>([]);
     const [loading, setLoading] = useState(true);
     const [apiError, setApiError] = useState('');
+    const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
 
     const [filterStatus, setFilterStatus] = useState('all');
     const [filterAspect, setFilterAspect] = useState('all');
@@ -350,6 +375,14 @@ export default function ProjectsPage() {
             ]);
             setProjects(ps);
             setTenants(ts);
+
+            // Fetch thumbnails for each project
+            const thumbs: Record<string, string> = {};
+            await Promise.all(ps.map(async (p) => {
+                const thumb = await fetchProjectThumbnail(p.id);
+                if (thumb) thumbs[p.id] = thumb;
+            }));
+            setThumbnails(thumbs);
         } catch (err: any) {
             console.error('Projects Load Error:', err);
             setApiError(err.message || 'Failed to connect to API.');
@@ -574,10 +607,13 @@ export default function ProjectsPage() {
                                         {/* Thumbnail */}
                                         <Link href={`/projects/${project.id}`}>
                                             <div style={{
-                                                height: 110, background: 'linear-gradient(135deg, var(--color-surface-2) 0%, var(--color-surface-3) 100%)',
+                                                height: 110, 
+                                                background: thumbnails[project.id] 
+                                                    ? `url(${thumbnails[project.id]}) center/cover` 
+                                                    : 'linear-gradient(135deg, var(--color-surface-2) 0%, var(--color-surface-3) 100%)',
                                                 display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 48, position: 'relative',
                                             }}>
-                                                {getEmoji(project.name)}
+                                                {!thumbnails[project.id] && getEmoji(project.name)}
                                                 <div style={{
                                                     position: 'absolute', bottom: 8, right: 8,
                                                     background: 'rgba(0,0,0,0.5)', color: 'white',
@@ -673,10 +709,12 @@ export default function ProjectsPage() {
                                     >
                                         <div style={{
                                             width: 42, height: 42, borderRadius: 'var(--radius-sm)',
-                                            background: 'var(--color-surface-2)',
+                                            background: thumbnails[project.id] 
+                                                ? `url(${thumbnails[project.id]}) center/cover` 
+                                                : 'var(--color-surface-2)',
                                             display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22,
                                         }}>
-                                            {getEmoji(project.name)}
+                                            {!thumbnails[project.id] && getEmoji(project.name)}
                                         </div>
                                         <div style={{ overflow: 'hidden' }}>
                                             <Link href={`/projects/${project.id}`} style={{

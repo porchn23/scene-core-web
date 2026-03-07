@@ -229,7 +229,7 @@ export default function TenantsPage() {
                                                         (tenantUsers[t.id] || []).map((u, index) => (
                                                             <div key={u?.id || `user-${index}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', fontSize: 12, borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
                                                                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                                                    <span>📧</span> <span style={{ color: '#e4e4e7' }}>{u?.email || 'Unknown User'}</span>
+                                                                    <span>📧</span> <span style={{ color: '#e4e4e7' }}>{u?.email || u?.id?.slice(0, 8) || 'Unknown'}</span>
                                                                     <span style={{ fontSize: 10, color: '#6366f1', background: '#eef2ff', padding: '1px 6px', borderRadius: 4 }}>{u?.role || 'member'}</span>
                                                                 </div>
 

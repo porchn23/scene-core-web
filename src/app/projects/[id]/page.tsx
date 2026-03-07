@@ -653,7 +653,7 @@ function EpisodeForm({ episode, nextNumber, loading, onSubmit, onClose }: { epis
 // ══════════════════════════════════════════════════════════════
 export default function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
     const { id } = use(params);
-    const { userProfile, tenantId, loading: authLoading } = useAuth();
+    const { userProfile, tenantId, loading: authLoading, user } = useAuth();
     const { t: toast, show: notify } = useToast();
     const [project, setProject] = useState<ProjectRead | null>(null);
     const [scenes, setScenes] = useState<SceneRead[]>([]);
@@ -768,12 +768,12 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             if (!tenantId) return;
             const payload = { ...data, episode_id: selectedEpisodeId !== 'all' ? selectedEpisodeId : null };
             if (editingScene) {
-                const u = await sceneService.update(editingScene.id, payload as SceneUpdate, tenantId);
+                const u = await sceneService.update(editingScene.id, payload as SceneUpdate, tenantId, user?.id);
                 setScenes(p => p.map(s => s.id === u.id ? u : s).sort((a, b) => a.scene_order - b.scene_order));
                 notify('Scene updated!');
             }
             else {
-                const c = await sceneService.create({ ...payload, project_id: id } as SceneCreate, tenantId);
+                const c = await sceneService.create({ ...payload, project_id: id } as SceneCreate, tenantId, user?.id);
                 setScenes(p => [...p, c].sort((a, b) => a.scene_order - b.scene_order));
                 pickScene(c.id);
                 notify('Scene created!');
@@ -795,11 +795,11 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         try {
             if (!tenantId) return;
             if (editingEpisode) {
-                const u = await episodeService.update(editingEpisode.id, data as EpisodeUpdate, tenantId);
+                const u = await episodeService.update(editingEpisode.id, data as EpisodeUpdate, tenantId, user?.id);
                 setEpisodes(p => p.map(e => e.id === u.id ? u : e).sort((a, b) => a.episode_number - b.episode_number));
                 notify('Episode updated!');
             } else {
-                const c = await episodeService.create({ ...data, project_id: id } as EpisodeCreate, tenantId);
+                const c = await episodeService.create({ ...data, project_id: id } as EpisodeCreate, tenantId, user?.id);
                 setEpisodes(p => [...p, c].sort((a, b) => a.episode_number - b.episode_number));
                 setSelectedEpisodeId(c.id);
                 notify('Episode added!');
@@ -818,7 +818,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         if (!confirm('Delete this episode? Scenes will be unassigned.')) return;
         setMutating(true);
         try {
-            await episodeService.delete(eid, tenantId);
+            await episodeService.delete(eid, tenantId, user?.id);
             setEpisodes(p => p.filter(e => e.id !== eid));
             setScenes(p => p.map(s => s.episode_id === eid ? { ...s, episode_id: null } : s));
             if (selectedEpisodeId === eid) setSelectedEpisodeId('all');
@@ -829,7 +829,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     const handleDeleteScene = async () => {
         if (!deletingSceneId || !tenantId) return;
         setMutating(true);
-        try { await sceneService.delete(deletingSceneId, tenantId); setScenes(p => p.filter(s => s.id !== deletingSceneId)); if (selectedSceneId === deletingSceneId) setSelectedSceneId(null); setDeletingSceneId(null); notify('Scene deleted.'); }
+        try { await sceneService.delete(deletingSceneId, tenantId, user?.id); setScenes(p => p.filter(s => s.id !== deletingSceneId)); if (selectedSceneId === deletingSceneId) setSelectedSceneId(null); setDeletingSceneId(null); notify('Scene deleted.'); }
         catch { notify('Failed.', true); } finally { setMutating(false); }
     };
 
@@ -838,7 +838,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         if (!sid || !tenantId) return;
         setMutating(true);
         try {
-            await sceneService.update(sid, { episode_id: targetEpisodeId === 'none' ? null : targetEpisodeId }, tenantId);
+            await sceneService.update(sid, { episode_id: targetEpisodeId === 'none' ? null : targetEpisodeId }, tenantId, user?.id);
             const freshScenes = await sceneService.listByProject(id, tenantId);
             setScenes(freshScenes.sort((a, b) => a.scene_order - b.scene_order));
             setMovingSceneId(null);
@@ -855,17 +855,17 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         setMutating(true);
         try {
             if (editingLoc) {
-                const u = await locationService.update(editingLoc.id, data, tenantId);
+                const u = await locationService.update(editingLoc.id, data, tenantId, user?.id);
                 setLocations(p => p.map(l => l.id === u.id ? u : l));
                 notify('Location updated!');
             }
             else {
-                const c = await locationService.create({ ...data, project_id: id }, tenantId);
+                const c = await locationService.create({ ...data, project_id: id }, tenantId, user?.id);
                 setLocations(p => [...p, c]);
                 notify('Location created!');
                 // Auto-assign to current scene if open
                 if (selectedSceneId) {
-                    const u = await sceneService.update(selectedSceneId, { location_id: c.id }, tenantId);
+                    const u = await sceneService.update(selectedSceneId, { location_id: c.id }, tenantId, user?.id);
                     setScenes(p => p.map(s => s.id === u.id ? u : s));
                 }
             }
@@ -878,7 +878,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         if (!lid || !tenantId) return;
         if (!confirm('Delete this location?')) return;
         setMutating(true);
-        try { await locationService.delete(lid, tenantId); setLocations(p => p.filter(l => l.id !== lid)); notify('Location deleted.'); }
+        try { await locationService.delete(lid, tenantId, user?.id); setLocations(p => p.filter(l => l.id !== lid)); notify('Location deleted.'); }
         catch (e: any) { notify(e.message, true); }
         finally { setMutating(false); }
     };
@@ -895,7 +895,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             } else {
                 delete nextStates[charId];
             }
-            const u = await sceneService.update(castModalSceneId, { character_states: nextStates as any }, tenantId);
+            const u = await sceneService.update(castModalSceneId, { character_states: nextStates as any }, tenantId, user?.id);
             setScenes(p => p.map(s => s.id === u.id ? { ...s, character_states: nextStates } : s));
             setCastModalSceneId(null); setCastModalCharId(null);
             notify('Character state updated.');
@@ -907,7 +907,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         setMutating(true);
         try {
             const existing = sceneShots[selectedSceneId] ?? [];
-            const c = await shotService.create({ scene_id: selectedSceneId, shot_order: existing.length + 1, target_duration: 5 }, tenantId);
+            const c = await shotService.create({ scene_id: selectedSceneId, shot_order: existing.length + 1, target_duration: 5 }, tenantId, user?.id);
             setSceneShots(p => ({ ...p, [selectedSceneId]: [...(p[selectedSceneId] ?? []), c] }));
             setActiveShot(c.id);
             setTimeout(() => shotRefs.current[c.id]?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
@@ -918,7 +918,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     const handleSaveShot = async (shotId: string, payload: ShotUpdate) => {
         if (!tenantId) return;
         try {
-            const u = await shotService.update(shotId, payload, tenantId);
+            const u = await shotService.update(shotId, payload, tenantId, user?.id);
             setSceneShots(p => ({ ...p, [u.scene_id]: (p[u.scene_id] ?? []).map(s => s.id === shotId ? u : s).sort((a, b) => a.shot_order - b.shot_order) }));
         } catch { notify('Failed to save shot.', true); }
     };
@@ -928,7 +928,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         const sceneId = Object.entries(sceneShots).find(([, shots]) => shots.some(s => s.id === deletingShotId))?.[0];
         setMutating(true);
         try {
-            await shotService.delete(deletingShotId, tenantId);
+            await shotService.delete(deletingShotId, tenantId, user?.id);
             if (sceneId) setSceneShots(p => ({ ...p, [sceneId]: p[sceneId].filter(s => s.id !== deletingShotId) }));
             if (activeShot === deletingShotId) setActiveShot(null);
             setDeletingShotId(null); notify('Shot deleted.');
@@ -958,7 +958,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         // save to DB in background
         setMutating(true);
         try {
-            await Promise.all(reordered.map(s => shotService.update(s.id, { shot_order: s.shot_order }, tenantId)));
+            await Promise.all(reordered.map(s => shotService.update(s.id, { shot_order: s.shot_order }, tenantId, user?.id)));
         } catch {
             notify('Failed to save order', true);
         } finally {
@@ -988,11 +988,11 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         setMutating(true);
         try {
             if (editingChar) {
-                const u = await characterService.update(editingChar.id, { name: data.name, personality_traits: data.personality_traits || null, outfit_description: data.outfit_description || null, actor_id: data.actor_id || null }, tenantId);
+                const u = await characterService.update(editingChar.id, { name: data.name, personality_traits: data.personality_traits || null, outfit_description: data.outfit_description || null, actor_id: data.actor_id || null }, tenantId, user?.id);
                 setCharacters(p => p.map(c => c.id === u.id ? u : c));
                 notify('Character updated!');
             } else {
-                const c = await characterService.create({ name: data.name, personality_traits: data.personality_traits || null, outfit_description: data.outfit_description || null, actor_id: data.actor_id || null, project_id: id }, tenantId);
+                const c = await characterService.create({ name: data.name, personality_traits: data.personality_traits || null, outfit_description: data.outfit_description || null, actor_id: data.actor_id || null, project_id: id }, tenantId, user?.id);
                 setCharacters(p => [...p, c]);
                 notify('Character added!');
             }
@@ -1004,7 +1004,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         if (!deletingCharId || !tenantId) return;
         setMutating(true);
         try {
-            await characterService.delete(deletingCharId, tenantId);
+            await characterService.delete(deletingCharId, tenantId, user?.id);
             setCharacters(p => p.filter(c => c.id !== deletingCharId));
             setDeletingCharId(null);
             notify('Character deleted.');
@@ -1535,7 +1535,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                                                             setSceneShots(p => ({ ...p, [selectedSceneId]: reordered }));
                                                             if (!tenantId) return;
                                                             setMutating(true);
-                                                            Promise.all(reordered.map(s => shotService.update(s.id, { shot_order: s.shot_order }, tenantId)))
+                                                            Promise.all(reordered.map(s => shotService.update(s.id, { shot_order: s.shot_order }, tenantId, user?.id)))
                                                                 .catch(() => notify('Failed to save order', true))
                                                                 .finally(() => setMutating(false));
                                                         }
@@ -1599,7 +1599,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                 </div>
             </Modal>
             <Modal open={editProjectOpen} onClose={() => setEditProjectOpen(false)} title="Edit Project">
-                {project && tenantId && <EditProjectForm project={project} loading={mutating} onSubmit={async p => { setMutating(true); try { const u = await projectService.update(project.id, p, tenantId); setProject(u); setEditProjectOpen(false); notify('Saved!'); } catch { notify('Failed.', true); } finally { setMutating(false); } }} onClose={() => setEditProjectOpen(false)} />}
+                {project && tenantId && <EditProjectForm project={project} loading={mutating} onSubmit={async p => { setMutating(true); try { const u = await projectService.update(project.id, p, tenantId, user?.id); setProject(u); setEditProjectOpen(false); notify('Saved!'); } catch { notify('Failed.', true); } finally { setMutating(false); } }} onClose={() => setEditProjectOpen(false)} />}
             </Modal>
             <Modal open={sceneModalOpen} onClose={() => { setSceneModalOpen(false); setEditingScene(null); }} title={editingScene ? 'Edit Scene' : 'New Scene'} width={520}>
                 <SceneForm scene={editingScene ?? undefined} nextOrder={scenes.length + 1} locations={locations} loading={mutating} onSubmit={handleSceneSubmit} onClose={() => { setSceneModalOpen(false); setEditingScene(null); }} />
