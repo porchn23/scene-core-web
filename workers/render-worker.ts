@@ -1,220 +1,153 @@
 // ============================================
-// Render Worker - Uses LISTEN/NOTIFY (no polling!)
+// Render Worker - Calls external API (localhost:8000)
+// Run with: npx tsx workers/render-worker.ts
 // ============================================
 
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY! // Use service role key
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-const AI_PROVIDERS = {
-  runway: generateRunway,
-  pika: generatePika,
-  kling: generateKling,
-  luma: generateLuma,
-};
+const API_BASE = 'http://localhost:8000';
+
+interface RenderJob {
+    id: string;
+    shot_id: string;
+    project_id: string;
+    scene_id: string;
+    job_type: string;
+    provider: string;
+    status: string;
+    credit_cost?: number;
+}
 
 async function main() {
-  console.log('🎬 Render Worker started - listening for jobs...');
+    console.log('🎬 Render Worker started');
+    console.log('📡 Listening for new jobs...');
 
-  // Listen for new jobs (instead of polling!)
-  supabase.channel('render_jobs')
-    .on('postgres_changes', {
-      event: 'INSERT',
-      schema: 'public',
-      table: 'render_jobs',
-      filter: "status=eq.pending"
-    }, async (payload) => {
-      const job = payload.new as any;
-      console.log('📬 New job received:', job?.id);
-      await processJob(job);
-    })
-    .subscribe();
+    // Listen for new jobs using Realtime
+    supabase.channel('render_jobs')
+        .on('postgres_changes', {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'render_jobs',
+            filter: 'status=eq.pending'
+        }, async (payload) => {
+            const job = payload.new as RenderJob;
+            console.log(`\n📬 New job received: ${job.id}`);
+            await processJob(job);
+        })
+        .subscribe();
 
-  // Keep alive
-  console.log('✅ Worker is listening for render jobs...');
+    console.log('✅ Worker is listening for render jobs...');
 }
 
-async function processJob(job: any) {
-  const { id: jobId, shot_id: shotId, provider = 'runway', job_type: jobType } = job;
-  
-  try {
-    // 1. Get shot data
-    const { data: shot } = await supabase
-      .from('shots')
-      .select('*, scenes(*, projects(*))')
-      .eq('id', shotId)
-      .single();
+async function processJob(job: RenderJob) {
+    try {
+        console.log(`🔄 Processing job: ${job.id}`);
+        console.log(`   Job type: ${job.job_type}`);
+        console.log(`   Shot ID: ${job.shot_id}`);
 
-    if (!shot) throw new Error('Shot not found');
+        // 1. Update job to processing
+        await supabase
+            .from('render_jobs')
+            .update({ status: 'processing' })
+            .eq('id', job.id);
 
-    // 2. Build prompt
-    const prompt = buildPrompt(shot);
+        // 2. Get shot data
+        const { data: shot } = await supabase
+            .from('shots')
+            .select('visual_prompt, project_id, scene_id')
+            .eq('id', job.shot_id)
+            .single();
 
-    // 3. Call AI provider
-    const generateFn = AI_PROVIDERS[provider as keyof typeof AI_PROVIDERS];
-    if (!generateFn) {
-      throw new Error(`Unknown provider: ${provider}`);
+        if (!shot) {
+            throw new Error('Shot not found');
+        }
+
+        // 3. Call external API
+        const endpoint = job.job_type === 'render_image' 
+            ? `${API_BASE}/api/render/image`
+            : `${API_BASE}/api/render/video`;
+
+        console.log(`📤 Calling API: ${endpoint}`);
+
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                shot_id: job.shot_id,
+                render_job_id: job.id,
+                scene_id: shot.scene_id || job.scene_id,
+                project_id: shot.project_id || job.project_id,
+                priority: 5
+            })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`API error: ${response.status} - ${errorText}`);
+        }
+
+        const result = await response.json();
+        console.log(`📥 API Response:`, result);
+
+        // 4. Update job with result
+        await supabase
+            .from('render_jobs')
+            .update({
+                status: 'completed',
+                completed_at: new Date().toISOString(),
+            })
+            .eq('id', job.id);
+
+        // 5. Update shot status
+        await supabase
+            .from('shots')
+            .update({ status: 'completed' })
+            .eq('id', job.shot_id);
+
+        console.log(`✅ Job ${job.id} completed!`);
+
+    } catch (error: any) {
+        console.error(`❌ Job ${job.id} failed:`, error.message);
+
+        // 6. Rollback credits
+        if (job.credit_cost && job.project_id) {
+            const { data: project } = await supabase
+                .from('projects')
+                .select('tenant_id')
+                .eq('id', job.project_id)
+                .single();
+
+            if (project?.tenant_id) {
+                await supabase.rpc('add_credits', { 
+                    p_amount: job.credit_cost, 
+                    p_tenant_id: project.tenant_id 
+                });
+                console.log(`🔄 Credits rolled back: ${job.credit_cost}`);
+            }
+        }
+
+        // 7. Update job status to failed
+        await supabase
+            .from('render_jobs')
+            .update({
+                status: 'failed',
+                error_log: error.message
+            })
+            .eq('id', job.id);
+
+        // 8. Update shot status
+        await supabase
+            .from('shots')
+            .update({ status: 'failed' })
+            .eq('id', job.shot_id);
     }
-
-    // Update status to processing
-    await supabase.from('render_jobs').update({ status: 'processing' }).eq('id', jobId);
-    await supabase.from('shots').update({ status: 'processing' }).eq('id', shotId);
-
-    // 4. Generate (this is async - wait for result)
-    const result = await generateFn(prompt, {
-      duration: shot.target_duration || 5,
-      aspect_ratio: shot.scenes?.projects?.aspect_ratio || '16:9',
-    });
-
-    // 5. Update with result
-    await supabase.from('shots').update({
-      status: 'completed',
-      preview_image_url: result.url,
-    }).eq('id', shotId);
-
-    await supabase.from('render_jobs').update({
-      status: 'completed',
-      completed_at: new Date().toISOString(),
-    }).eq('id', jobId);
-
-    console.log(`✅ Job ${jobId} completed!`);
-
-  } catch (error: any) {
-    console.error(`❌ Job ${jobId} failed:`, error.message);
-
-    // Rollback credits
-    const cost = jobType === 'render_video' ? 10 : 2;
-    await supabase.rpc('add_credits', { 
-      tenant_id: job.tenant_id, 
-      amount: cost 
-    }).catch(() => {});
-
-    await supabase.from('shots').update({ status: 'failed' }).eq('id', shotId);
-    await supabase.from('render_jobs').update({
-      status: 'failed',
-      error_log: error.message,
-    }).eq('id', jobId);
-  }
 }
 
-function buildPrompt(shot: any): string {
-  const parts = [];
-  
-  if (shot.camera_angle) parts.push(`${shot.camera_angle} shot`);
-  if (shot.motion_type && shot.motion_type !== 'Static') {
-    parts.push(`with ${shot.motion_type} camera movement`);
-  }
-  if (shot.focal_length) parts.push(`using ${shot.focal_length} lens`);
-
-  // Parse sfx_prompt for script
-  try {
-    const script = JSON.parse(shot.sfx_prompt || '{}');
-    if (script.action) parts.push(script.action);
-    if (script.dialogue?.length) {
-      const dialogues = script.dialogue
-        .map((d: any) => `${d.character}: "${d.line}"`)
-        .join('. ');
-      parts.push(dialogues);
-    }
-  } catch {}
-
-  return parts.join('. ');
-}
-
-// AI Provider implementations
-async function generateRunway(prompt: string, options: any) {
-  const res = await fetch('https://api.runwayml.com/v1/generation', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.RUNWAY_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ prompt, model: 'gen3a', ...options }),
-  });
-  
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.message || 'Runway API error');
-  
-  // Wait for generation to complete
-  return waitForCompletion(data.id, 'runway');
-}
-
-async function generatePika(prompt: string, options: any) {
-  const res = await fetch('https://api.pika.art/v1/generate', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.PIKA_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ prompt, ...options }),
-  });
-  
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.message || 'Pika API error');
-  
-  return waitForCompletion(data.id, 'pika');
-}
-
-async function generateKling(prompt: string, options: any) {
-  const res = await fetch('https://api.klingai.com/v1/generations', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.KLING_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ model: 'kling-v1', prompt, ...options }),
-  });
-  
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.message || 'Kling API error');
-  
-  return waitForCompletion(data.task_id, 'kling');
-}
-
-async function generateLuma(prompt: string, options: any) {
-  const res = await fetch('https://api.lumalabs.ai/dream-machine/v1/generations', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.LUMA_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ prompt, ...options }),
-  });
-  
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.message || 'Luma API error');
-  
-  return waitForCompletion(data.generations?.[0]?.id, 'luma');
-}
-
-// Poll for completion (or use webhook in production)
-async function waitForCompletion(taskId: string, provider: string): Promise<{ url: string }> {
-  const maxAttempts = 120; // 2 minutes max
-  const delay = 1000; // 1 second
-  
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise(r => setTimeout(r, delay));
-    
-    const status = await checkStatus(taskId, provider);
-    
-    if (status.status === 'completed') {
-      return { url: status.url };
-    }
-    if (status.status === 'failed') {
-      throw new Error(status.error || 'Generation failed');
-    }
-  }
-  
-  throw new Error('Generation timeout');
-}
-
-async function checkStatus(taskId: string, provider: string) {
-  // Implement status check for each provider
-  // This is provider-specific
-  return { status: 'completed', url: '' };
-}
-
-main();
+main().catch(console.error);

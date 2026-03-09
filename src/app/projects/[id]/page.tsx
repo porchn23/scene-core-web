@@ -4,6 +4,7 @@ import Link from 'next/link';
 import Sidebar from '@/components/Sidebar';
 import Modal from '@/components/Modal';
 import { projectService, episodeService, sceneService, shotService, characterService, actorService, locationService } from '@/lib/services';
+import { supabase } from '@/lib/supabase';
 import type { ProjectRead, ProjectUpdate, EpisodeRead, EpisodeCreate, EpisodeUpdate, SceneRead, SceneCreate, SceneUpdate, ShotRead, ShotCreate, ShotUpdate, CharacterRead, ActorRead, LocationRead } from '@/lib/services';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/hooks/useToast';
@@ -968,18 +969,70 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
     const handleRender = async (shotId: string, type: 'video' | 'image' = 'video') => {
         if (!selectedSceneId || !tenantId) return;
+        
         try {
-            await shotService.generate(shotId, id, selectedSceneId, tenantId, type);
-            // Update local state to show 'processing' immediately
+            console.log('=== FRONTEND: Starting render ===');
+            
+            // 1. Create job - returns job_id immediately
+            console.log('1. Calling shotService.generate()...');
+            const { job_id, status } = await shotService.generate(shotId, id, selectedSceneId, tenantId, type);
+            console.log('2. Got job_id:', job_id, 'status:', status);
+            
+            notify(`🎬 Job ${job_id.slice(0,8)} queued! (${status})`);
+
+            // 2. Update local state
+            console.log('3. Updating local state to processing...');
             setSceneShots(p => ({
                 ...p,
                 [selectedSceneId]: (p[selectedSceneId] || []).map(s =>
                     s.id === shotId ? { ...s, status: 'processing' } : s
                 )
             }));
-            notify(type === 'image' ? '📸 Image queued!' : '🎬 Video queued!');
+
+            // 3. Subscribe to job status changes (Realtime)
+            console.log('4. Subscribing to realtime updates...');
+            shotService.subscribeToJob(job_id, async (newStatus, data) => {
+                console.log('5. 📡 Received status update:', newStatus);
+                console.log('   Full data:', data);
+                
+                if (newStatus === 'completed') {
+                    console.log('6. ✅ Render completed! Fetching shot data...');
+                    
+                    // Fetch latest shot data from DB
+                    const { data: updatedShot } = await supabase
+                        .from('shots')
+                        .select('*')
+                        .eq('id', shotId)
+                        .single();
+                    
+                    console.log('   Updated shot:', updatedShot);
+                    
+                    setSceneShots(prev => ({
+                        ...prev,
+                        [selectedSceneId]: (prev[selectedSceneId] || []).map(s =>
+                            s.id === shotId ? { 
+                                ...s, 
+                                status: updatedShot?.status || 'completed', 
+                                preview_image_url: updatedShot?.preview_image_url || s.preview_image_url 
+                            } : s
+                        )
+                    }));
+                    notify('✅ Render completed!');
+                } else if (newStatus === 'failed') {
+                    console.log('6. ❌ Render failed!', data.error_log);
+                    setSceneShots(prev => ({
+                        ...prev,
+                        [selectedSceneId]: (prev[selectedSceneId] || []).map(s =>
+                            s.id === shotId ? { ...s, status: 'failed' } : s
+                        )
+                    }));
+                    notify('❌ Render failed: ' + (data.error_log || 'Unknown error'), true);
+                }
+            });
+        } catch (e: any) { 
+            console.error('ERROR:', e); 
+            notify(e.detail || e.message || 'Failed to queue render.', true); 
         }
-        catch (e: any) { console.error(e); notify(e.detail || e.message || 'Failed to queue render.', true); }
     };
 
     // Character CRUD

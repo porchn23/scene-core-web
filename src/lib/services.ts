@@ -773,35 +773,80 @@ export const shotService = {
         });
     },
 
-    generate: async (shotId: string, projectId: string, sceneId: string, tenantId: string, type: 'video' | 'image' = 'video', provider: 'runway' | 'pika' | 'kling' | 'luma' = 'runway'): Promise<unknown> => {
+    generate: async (shotId: string, projectId: string, sceneId: string, tenantId: string, type: 'video' | 'image' = 'video', provider: 'runway' | 'pika' | 'kling' | 'luma' = 'runway'): Promise<{ job_id: string; status: string }> => {
+        console.log('=== GENERATE WORKFLOW ===');
+        console.log('1. Starting generate for shot:', shotId, 'type:', type);
+        
         validateUUID(shotId, 'Shot ID');
         validateUUID(projectId, 'Project ID');
         validateUUID(tenantId, 'Tenant ID');
 
         // 1. Verify ownership
+        console.log('2. Verifying ownership...');
         const { count } = await supabase.from('projects').select('*', { count: 'exact', head: true }).eq('id', projectId).eq('tenant_id', tenantId);
         if (!count) throw new Error('Unauthorized');
 
-        // 2. Get shot data for prompt building
-        const { data: shot } = await supabase.from('shots').select('*').eq('id', shotId).single();
-        if (!shot) throw new Error('Shot not found');
-
-        // 3. Check credits
+        // 2. Check credits FIRST (before doing anything)
+        console.log('3. Checking credits...');
         const { data: tenant, error: tenantErr } = await supabase.from('tenants').select('credit_balance').eq('id', tenantId).single();
         if (tenantErr) throw new Error(tenantErr.message);
 
         const cost = type === 'video' ? 10 : 2;
+        console.log('   Cost:', cost, 'Current balance:', tenant?.credit_balance);
         if ((tenant?.credit_balance ?? 0) < cost) {
             throw new Error(`Insufficient credits. Need ${cost} credits, have ${tenant?.credit_balance ?? 0}`);
         }
 
-        // 4. Deduct credits first
+        // 3. Deduct credits
+        console.log('4. Deducting credits...');
         const { error: deductErr } = await supabase.rpc('deduct_credits', { p_amount: cost, p_tenant_id: tenantId });
         if (deductErr) {
             throw new Error('Failed to deduct credits: ' + deductErr.message);
         }
 
-        // 5. Create render job with provider
+        // 4. Get shot data for prompt building
+        console.log('5. Getting shot data...');
+        const { data: shot } = await supabase.from('shots').select('*').eq('id', shotId).single();
+        if (!shot) {
+            await supabase.rpc('add_credits', { p_amount: cost, p_tenant_id: tenantId });
+            throw new Error('Shot not found');
+        }
+
+        // 5. Build visual_prompt from shot data
+        console.log('6. Building visual_prompt...');
+        const buildPromptFromShot = (s: any): string => {
+            const parts: string[] = [];
+            if (s.camera_angle) parts.push(`${s.camera_angle} shot`);
+            if (s.motion_type && s.motion_type !== 'Static') parts.push(`${s.motion_type} camera`);
+            if (s.focal_length) parts.push(`${s.focal_length} lens`);
+            if (s.target_duration) parts.push(`${s.target_duration}s`);
+            
+            try {
+                const script = JSON.parse(s.sfx_prompt || '{}');
+                if (script.action) parts.push(script.action);
+                if (script.dialogue?.length) {
+                    const dialogues = script.dialogue
+                        .map((d: any) => `${d.character}: "${d.line}"${d.emotion !== 'Neutral' ? ` (${d.emotion})` : ''}`)
+                        .join(' / ');
+                    parts.push(dialogues);
+                }
+                if (script.notes) parts.push(`Notes: ${script.notes}`);
+            } catch {}
+            
+            return parts.join('. ');
+        };
+
+        const visualPrompt = buildPromptFromShot(shot);
+        console.log('   Generated prompt:', visualPrompt?.substring(0, 100) + '...');
+
+        // 6. Update shot with visual_prompt
+        console.log('7. Updating shot with visual_prompt...');
+        await supabase.from('shots').update({ 
+            visual_prompt: visualPrompt
+        }).eq('id', shotId);
+
+        // 7. Create render job
+        console.log('8. Creating render job...');
         const jobType = type === 'image' ? 'render_image' : 'render_video';
         const { data: job, error: jobErr } = await supabase.from('render_jobs').insert({
             shot_id: shotId,
@@ -810,20 +855,72 @@ export const shotService = {
             status: 'pending',
             job_type: jobType,
             provider: provider,
+            credit_cost: cost,
+            preview_image_url: null,
         }).select().single();
+        
         if (jobErr) {
-            // Rollback credits if job creation fails
             await supabase.rpc('add_credits', { p_amount: cost, p_tenant_id: tenantId });
+            await supabase.from('shots').update({ visual_prompt: null }).eq('id', shotId);
             throw new Error(jobErr.message);
         }
 
-        // 6. Update shot status to processing
+        console.log('   Job created:', job.id, 'status:', job.status);
+
+        // 8. Update shot status to processing
+        console.log('9. Updating shot status to processing...');
         await supabase.from('shots').update({ status: 'processing' }).eq('id', shotId);
 
-        // 7. NOTIFY worker immediately (instead of polling)
-        await supabase.rpc('notify_new_job', { p_job_id: job.id });
+        // 10. Call external API to process the job
+        console.log('11. Calling external API...');
+        const apiEndpoint = type === 'image' 
+            ? `${process.env.NEXT_PUBLIC_RENDER_API_URL}/api/render/image`
+            : `${process.env.NEXT_PUBLIC_RENDER_API_URL}/api/render/video`;
+        
+        console.log('   API URL:', apiEndpoint);
+        console.log('   NEXT_PUBLIC_RENDER_API_URL:', process.env.NEXT_PUBLIC_RENDER_API_URL);
+        
+        try {
+            console.log('   Sending request...');
+            const apiResponse = await fetch(apiEndpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    shot_id: shotId,
+                    render_job_id: job.id,
+                    scene_id: sceneId,
+                    project_id: projectId,
+                    priority: 5
+                })
+            });
 
-        return job;
+            console.log('   Response status:', apiResponse.status);
+
+            if (!apiResponse.ok) {
+                const errorText = await apiResponse.text();
+                throw new Error(`API error: ${apiResponse.status} - ${errorText}`);
+            }
+
+            const apiResult = await apiResponse.json();
+            console.log('   API Response:', apiResult);
+        } catch (apiError: any) {
+            console.error('   API call failed:', apiError.message);
+            // Don't throw - let the job stay in processing and handle errors via polling/realtime
+        }
+
+        // Return job_id immediately for frontend to subscribe
+        console.log('=== GENERATE COMPLETE ===');
+        console.log('   Returning job_id:', job.id);
+        return { job_id: job.id, status: job.status };
+    },
+
+    // Subscribe to job status changes (using Redis instead of Supabase realtime)
+    subscribeToJob: (jobId: string, onUpdate: (status: string, data: any) => void) => {
+        // Redis-based subscription - no-op for now
+        console.log('   Using Redis for job updates (Supabase realtime disabled)');
+        return () => {};
     },
 };
 
@@ -946,6 +1043,7 @@ export interface ActorRead {
     age_range?: string | null;
     ethnicity?: string | null;
     base_prompt: string;
+    visual_dna?: string | null;
     negative_prompt?: string | null;
     face_image_url: string;
     image_urls?: string[] | null;
@@ -1103,6 +1201,52 @@ export const actorService = {
             lora_training_id: `train_${Date.now()}`
         }).eq('id', id);
         if (error) throw new Error(error.message);
+    },
+
+    /** Generate Visual DNA for an actor */
+    generateVisualDNA: async (id: string, tenantId: string): Promise<{ jobId: string; visualDNA?: string }> => {
+        validateUUID(id, 'Actor ID');
+        validateUUID(tenantId, 'Tenant ID');
+
+        // Verify ownership
+        const { data: actor } = await supabase.from('actors').select('*').eq('id', id).eq('tenant_id', tenantId).single();
+        if (!actor) throw new Error('Unauthorized or Actor not found');
+
+        // Create render job
+        const { data: job, error: jobErr } = await supabase.from('render_jobs').insert({
+            actor_id: id,
+            status: 'pending',
+            job_type: 'generate_visual_dna'
+        }).select().single();
+        if (jobErr) throw new Error(jobErr.message);
+
+        // Call external API
+        const apiEndpoint = `${process.env.NEXT_PUBLIC_RENDER_API_URL}/api/actors/generate-dna`;
+        const apiResponse = await fetch(apiEndpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                actor_id: id,
+                render_job_id: job.id,
+                priority: 5
+            })
+        });
+
+        if (!apiResponse.ok) {
+            await supabase.from('render_jobs').update({ status: 'failed', error_log: 'API call failed' }).eq('id', job.id);
+            throw new Error('Failed to generate Visual DNA');
+        }
+
+        const data = await apiResponse.json();
+        
+        // If visual_dna is returned immediately, update the job and actor
+        if (data.visual_dna) {
+            await supabase.from('render_jobs').update({ status: 'completed' }).eq('id', job.id);
+            await supabase.from('actors').update({ visual_dna: data.visual_dna }).eq('id', id);
+            return { jobId: job.id, visualDNA: data.visual_dna };
+        }
+
+        return { jobId: job.id };
     },
 };
 
@@ -1321,30 +1465,71 @@ export interface RenderJobRead {
     scene_id?: string | null;
     actor_id?: string | null;
     status: string;
-    job_type: 'render_video' | 'render_image' | 'train_lora';
+    job_type: 'render_video' | 'render_image' | 'train_lora' | 'generate_visual_dna';
     provider?: string | null;
     error_log?: string | null;
     created_at: string;
     updated_at: string;
-    projects?: { name?: string };
+    projects?: { name?: string; tenant_id?: string };
+    actors?: { name?: string; tenant_id?: string };
+    tenant_name?: string;
 }
 
 export const renderJobService = {
     list: async (tenantId?: string): Promise<RenderJobRead[]> => {
+        // Get jobs from projects with tenant info
+        const { data: projectJobs, error: projectError } = await supabase
+            .from('render_jobs')
+            .select('*, projects!inner(name, tenant_id)')
+            .not('project_id', 'is', null);
+        
+        // Get jobs from actors with tenant info
+        const { data: actorJobs, error: actorError } = await supabase
+            .from('render_jobs')
+            .select('*, actors!inner(name, tenant_id)')
+            .is('project_id', null)
+            .not('actor_id', 'is', null);
+        
+        if (projectError) throw new Error(projectError.message);
+        if (actorError) throw new Error(actorError.message);
+        
+        // Get tenant names
+        const tenantIds = new Set<string>();
+        [...(projectJobs || []), ...(actorJobs || [])].forEach((job: any) => {
+            const tid = job.projects?.tenant_id || job.actors?.tenant_id;
+            if (tid) tenantIds.add(tid);
+        });
+        
+        const { data: tenants } = await supabase.from('tenants').select('id, name').in('id', Array.from(tenantIds));
+        const tenantMap = new Map((tenants || []).map((t: any) => [t.id, t.name]));
+        
+        // Combine and add tenant name
+        const allJobs = [...(projectJobs || []), ...(actorJobs || [])].map((job: any) => ({
+            ...job,
+            tenant_name: tenantMap.get(job.projects?.tenant_id || job.actors?.tenant_id) || '-'
+        }));
+        
+        allJobs.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        
+        // Filter by tenantId if provided
+        let filtered = allJobs;
         if (tenantId) {
-            validateUUID(tenantId, 'Tenant ID');
-            const { data, error } = await supabase.from('render_jobs').select('*, projects!inner(*)').eq('projects.tenant_id', tenantId).order('created_at', { ascending: false });
-            if (error) throw new Error(error.message);
-            return data as any[];
+            filtered = allJobs.filter((job: any) => 
+                job.projects?.tenant_id === tenantId || job.actors?.tenant_id === tenantId
+            );
         }
-        return [];
+        
+        return filtered as any[];
     },
     updateStatus: async (id: string, status: string, tenantId: string): Promise<RenderJobRead> => {
         validateUUID(id, 'Job ID');
         validateUUID(tenantId, 'Tenant ID');
-        // Join with projects to verify tenant
-        const { data: job } = await supabase.from('render_jobs').select('*, projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
-        if (!job) throw new Error('Unauthorized');
+        // Check project-based job
+        const { data: projectJob } = await supabase.from('render_jobs').select('*, projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
+        // Check actor-based job
+        const { data: actorJob } = projectJob ? { data: null } : await supabase.from('render_jobs').select('*, actors!inner(*)').eq('id', id).eq('actors.tenant_id', tenantId).single();
+        
+        if (!projectJob && !actorJob) throw new Error('Unauthorized');
 
         const { data, error } = await supabase.from('render_jobs').update({ status }).eq('id', id).select().single();
         if (error) throw new Error(error.message);
@@ -1353,8 +1538,12 @@ export const renderJobService = {
     delete: async (id: string, tenantId: string): Promise<void> => {
         validateUUID(id, 'Job ID');
         validateUUID(tenantId, 'Tenant ID');
-        const { data: job } = await supabase.from('render_jobs').select('*, projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
-        if (!job) throw new Error('Unauthorized');
+        // Check project-based job
+        const { data: projectJob } = await supabase.from('render_jobs').select('*, projects!inner(*)').eq('id', id).eq('projects.tenant_id', tenantId).single();
+        // Check actor-based job
+        const { data: actorJob } = projectJob ? { data: null } : await supabase.from('render_jobs').select('*, actors!inner(*)').eq('id', id).eq('actors.tenant_id', tenantId).single();
+        
+        if (!projectJob && !actorJob) throw new Error('Unauthorized');
 
         const { error } = await supabase.from('render_jobs').delete().eq('id', id);
         if (error) throw new Error(error.message);

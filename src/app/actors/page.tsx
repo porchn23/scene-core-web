@@ -319,7 +319,10 @@ function ActorCard({ actor, isOwner, onEdit, onDelete, onViewProfile }: { actor:
                 </div>
 
                 <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '10px 12px' }}>
-                    <div style={{ fontWeight: 800, fontSize: 15, color: '#fff', marginBottom: 2 }}>{actor.name}</div>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: '#fff', marginBottom: 2, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {actor.name}
+                        {actor.visual_dna && <span title="Visual DNA Generated">🧬</span>}
+                    </div>
                     <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.65)', display: 'flex', gap: 5, flexWrap: 'wrap' }}>
                         {actor.gender} {actor.age_range && `· ${actor.age_range}`} {actor.ethnicity && `· ${actor.ethnicity}`}
                     </div>
@@ -357,8 +360,10 @@ function ActorFormModal({ actor, onClose, onSaved }: { actor?: ActorRead | null;
     const [ethnicity, setEthnicity] = useState(actor?.ethnicity ?? '');
     const [faceUrl, setFaceUrl] = useState(actor?.face_image_url ?? '');
     const [imageUrls, setImageUrls] = useState<string[]>(actor?.image_urls || []);
-    const [basePrompt, setBasePrompt] = useState(actor?.base_prompt ?? '');
+    const [basePrompt, setBasePrompt] = useState(actor?.visual_dna ?? actor?.base_prompt ?? '');
+    const [visualDnaGenerated, setVisualDnaGenerated] = useState(!!actor?.visual_dna?.trim());
     const [negPrompt, setNegPrompt] = useState(actor?.negative_prompt ?? '');
+    const [hasActiveJob, setHasActiveJob] = useState(false);
     const [visibility, setVisibility] = useState(actor?.visibility ?? 'private');
     const [usageFee, setUsageFee] = useState(actor?.usage_fee ?? 0);
     const [loraUrl, setLoraUrl] = useState(actor?.lora_url ?? null);
@@ -413,6 +418,39 @@ function ActorFormModal({ actor, onClose, onSaved }: { actor?: ActorRead | null;
         }
     };
 
+    useEffect(() => {
+        if (actor?.id && tenantId) {
+            supabase.from('render_jobs')
+                .select('id')
+                .eq('actor_id', actor.id)
+                .eq('job_type', 'generate_visual_dna')
+                .in('status', ['pending', 'processing'])
+                .maybeSingle()
+                .then(({ data }) => setHasActiveJob(!!data));
+        }
+    }, [actor?.id, tenantId]);
+
+    const handleGenerateDNA = async () => {
+        if (!actor?.id) { notify('Please save the actor first', true); return; }
+        if (!tenantId) { notify('Tenant not found', true); return; }
+        try {
+            notify('Generating Visual DNA...');
+            setHasActiveJob(true);
+            const result = await actorService.generateVisualDNA(actor.id, tenantId);
+            if (result.visualDNA) {
+                setBasePrompt(result.visualDNA);
+                setVisualDnaGenerated(true);
+                setHasActiveJob(false);
+                notify('Visual DNA generated!');
+            } else {
+                notify('Job queued! Check Render Jobs for status.');
+            }
+        } catch (e: any) { 
+            setHasActiveJob(false);
+            notify(e.message || 'Failed to generate', true); 
+        }
+    };
+
     return (
         <div style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
             <div style={{ background: 'var(--color-surface)', borderRadius: 20, width: '100%', maxWidth: 700, maxHeight: '92vh', display: 'flex', flexDirection: 'column', boxShadow: '0 30px 80px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
@@ -447,11 +485,47 @@ function ActorFormModal({ actor, onClose, onSaved }: { actor?: ActorRead | null;
                                 </div>
                                 <div className="form-group">
                                     <label className="form-label">Age Range</label>
-                                    <input className="form-input" value={ageRange} onChange={e => setAgeRange(e.target.value)} placeholder="e.g. 20-30" />
+                                    <select className="form-input" value={ageRange} onChange={e => setAgeRange(e.target.value)}>
+                                        <option value="">Select Age Range</option>
+                                        <option value="18-25">18-25</option>
+                                        <option value="26-35">26-35</option>
+                                        <option value="36-45">36-45</option>
+                                        <option value="46-55">46-55</option>
+                                        <option value="56-65">56-65</option>
+                                        <option value="65+">65+</option>
+                                    </select>
                                 </div>
                                 <div className="form-group">
                                     <label className="form-label">Ethnicity</label>
-                                    <input className="form-input" value={ethnicity} onChange={e => setEthnicity(e.target.value)} placeholder="e.g. Asian, Caucasian" />
+                                    <select className="form-input" value={ethnicity} onChange={e => setEthnicity(e.target.value)}>
+                                        <option value="">Select Ethnicity</option>
+                                        <option value="East Asian - Chinese">East Asian - Chinese</option>
+                                        <option value="East Asian - Japanese">East Asian - Japanese</option>
+                                        <option value="East Asian - Korean">East Asian - Korean</option>
+                                        <option value="East Asian - Vietnamese">East Asian - Vietnamese</option>
+                                        <option value="East Asian - Thai">East Asian - Thai</option>
+                                        <option value="Southeast Asian - Filipino">Southeast Asian - Filipino</option>
+                                        <option value="Southeast Asian - Indonesian">Southeast Asian - Indonesian</option>
+                                        <option value="Southeast Asian - Malaysian">Southeast Asian - Malaysian</option>
+                                        <option value="South Asian - Indian">South Asian - Indian</option>
+                                        <option value="South Asian - Pakistani">South Asian - Pakistani</option>
+                                        <option value="South Asian - Bangladeshi">South Asian - Bangladeshi</option>
+                                        <option value="Caucasian - European">Caucasian - European</option>
+                                        <option value="Caucasian - American">Caucasian - American</option>
+                                        <option value="Caucasian - Russian">Caucasian - Russian</option>
+                                        <option value="Caucasian - Middle Eastern">Caucasian - Middle Eastern</option>
+                                        <option value="African - West African">African - West African</option>
+                                        <option value="African - East African">African - East African</option>
+                                        <option value="African - South African">African - South African</option>
+                                        <option value="African American">African American</option>
+                                        <option value="Hispanic - Latin American">Hispanic - Latin American</option>
+                                        <option value="Hispanic - Spanish">Hispanic - Spanish</option>
+                                        <option value="Pacific Islander - Hawaiian">Pacific Islander - Hawaiian</option>
+                                        <option value="Pacific Islander - Samoan">Pacific Islander - Samoan</option>
+                                        <option value="Native American">Native American</option>
+                                        <option value="Mixed Ethnicity">Mixed Ethnicity</option>
+                                        <option value="Other">Other</option>
+                                    </select>
                                 </div>
                             </div>
 
@@ -467,7 +541,40 @@ function ActorFormModal({ actor, onClose, onSaved }: { actor?: ActorRead | null;
                         </>
                     )}
                     {tab === 'photo' && (<div><ImageInputPanel value={faceUrl} onChange={setFaceUrl} basePrompt={basePrompt} gender={gender} ethnicity={ethnicity} ageRange={ageRange} /><div style={{ marginTop: 20 }}><MultiImageUploader urls={imageUrls} onChange={setImageUrls} /></div></div>)}
-                    {tab === 'prompt' && (<div className="form-group"><label className="form-label">Appearance Prompt</label><textarea className="form-input" rows={5} value={basePrompt} onChange={e => setBasePrompt(e.target.value)} /></div>)}
+                    {tab === 'prompt' && (
+                        <div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                                <label className="form-label" style={{ margin: 0 }}>Appearance Prompt</label>
+                                {!hasActiveJob && (
+                                    <button 
+                                        type="button"
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={handleGenerateDNA}
+                                    >
+                                        🧬 Generate Visual DNA
+                                    </button>
+                                )}
+                                {hasActiveJob && (
+                                    <div style={{ fontSize: 11, color: 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                        ⏳ Generating...
+                                    </div>
+                                )}
+                            </div>
+                            {visualDnaGenerated && (
+                                <div style={{ fontSize: 11, color: 'var(--color-success)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    ✓ Generated by AI - Read only
+                                </div>
+                            )}
+                            <textarea 
+                                className="form-input" 
+                                rows={5} 
+                                value={basePrompt} 
+                                readOnly={true}
+                                style={{ background: 'var(--color-surface-2)', cursor: 'not-allowed' }}
+                                placeholder={visualDnaGenerated ? '' : 'Click Generate Visual DNA to create appearance prompt...'}
+                            />
+                        </div>
+                    )}
                     {tab === 'lora' && (
                         <LoRAUploader
                             actorId={actor?.id}
@@ -487,102 +594,99 @@ function ActorFormModal({ actor, onClose, onSaved }: { actor?: ActorRead | null;
 }
 
 // ══════════════════════════════════════════════════════════════
-// ACTOR PROFILE VIEWER MODAL
+// ACTOR PROFILE VIEWER MODAL - Simple Version
 // ══════════════════════════════════════════════════════════════
 function ActorProfileViewer({ actor, onClose }: { actor: ActorRead; onClose: () => void }) {
     const [activeImg, setActiveImg] = useState(actor.face_image_url);
     const allImages = [actor.face_image_url, ...(actor.image_urls || [])].filter(Boolean);
 
     return (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.92)', backdropFilter: 'blur(20px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={onClose}>
-            <div style={{ display: 'flex', background: 'var(--color-surface)', borderRadius: 32, overflow: 'hidden', width: '100%', maxWidth: 1100, height: '88vh', boxShadow: '0 40px 100px rgba(0,0,0,0.6)' }} onClick={e => e.stopPropagation()}>
-
-                {/* Image Section */}
-                <div style={{ flex: '1.4', background: '#050505', display: 'flex', flexDirection: 'column', position: 'relative' }}>
-                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40, overflow: 'hidden' }}>
-                        <img src={activeImg} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 12, transition: 'all 0.3s' }} alt={actor.name} />
+        <div style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={onClose}>
+            <div style={{ background: 'var(--color-surface)', borderRadius: 20, width: '100%', maxWidth: 800, maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+                {/* Header */}
+                <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>{actor.name}</h2>
+                        <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--color-text-tertiary)' }}>ID: {actor.id.split('-')[0]}</p>
                     </div>
-                    {/* Thumbnail Strip */}
+                    <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 18, background: 'var(--color-surface-2)' }}>✕</button>
+                </div>
+                
+                {/* Content */}
+                <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
+                    {/* Main Image */}
+                    <div style={{ marginBottom: 20 }}>
+                        <img src={activeImg} style={{ width: '100%', maxHeight: 300, objectFit: 'contain', borderRadius: 12, background: '#000' }} alt={actor.name} />
+                    </div>
+                    
+                    {/* Thumbnails */}
                     {allImages.length > 1 && (
-                        <div style={{ height: 100, background: 'rgba(255,255,255,0.03)', borderTop: '1px solid rgba(255,255,255,0.08)', display: 'flex', gap: 10, padding: 15, overflowX: 'auto', justifyContent: 'center' }}>
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 20, overflowX: 'auto' }}>
                             {allImages.map((url, i) => (
-                                <img
-                                    key={i}
-                                    src={url}
-                                    onClick={() => setActiveImg(url)}
-                                    style={{
-                                        height: '100%',
-                                        aspectRatio: '1',
-                                        objectFit: 'cover',
-                                        borderRadius: 8,
-                                        cursor: 'pointer',
-                                        border: activeImg === url ? '2px solid var(--color-accent)' : '2px solid transparent',
-                                        opacity: activeImg === url ? 1 : 0.5,
-                                        transition: 'all 0.2s'
-                                    }}
-                                />
+                                <img key={i} src={url} onClick={() => setActiveImg(url)} style={{ width: 60, height: 60, objectFit: 'cover', borderRadius: 8, cursor: 'pointer', border: activeImg === url ? '2px solid var(--color-accent)' : '2px solid transparent' }} />
                             ))}
                         </div>
                     )}
-                    {/* Floating Badges on Image */}
-                    <div style={{ position: 'absolute', top: 24, left: 24, display: 'flex', gap: 8 }}>
-                        <div style={{ background: 'rgba(255,255,255,0.15)', backdropFilter: 'blur(10px)', color: '#fff', fontSize: 11, fontWeight: 800, padding: '4px 12px', borderRadius: 30, border: '1px solid rgba(255,255,255,0.2)' }}>Lv.{actor.level} EX</div>
-                        {actor.visibility === 'public' && <div style={{ background: 'var(--color-accent)', color: '#fff', fontSize: 11, fontWeight: 800, padding: '4px 12px', borderRadius: 30 }}>🌎 MARKETPLACE</div>}
+                    
+                    {/* Badges */}
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+                        {actor.visibility === 'public' && <span style={{ background: 'var(--color-accent)', color: '#fff', padding: '4px 12px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>🌎 Public</span>}
+                        {actor.visual_dna && <span style={{ background: '#14b8a6', color: '#fff', padding: '4px 12px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>🧬 DNA</span>}
+                        {actor.lora_url && <span style={{ background: '#8b5cf6', color: '#fff', padding: '4px 12px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>🧠 LoRA</span>}
+                        <span style={{ background: 'var(--color-surface-2)', padding: '4px 12px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>Lv.{actor.level}</span>
                     </div>
-                </div>
-
-                {/* Info Section */}
-                <div style={{ flex: '1', padding: '48px 40px', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <div style={{ flex: 1 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                                <h1 style={{ fontSize: 42, fontWeight: 900, margin: 0, letterSpacing: '-0.03em' }}>{actor.name}</h1>
-                                {actor.lora_url && <div title="AI LoRA Ready" style={{ width: 44, height: 44, background: '#f5f3ff', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, cursor: 'help', border: '1px solid #ddd6fe' }}>🧠</div>}
-                            </div>
-                            {actor.lora_training_status === 'training' && (
-                                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 800, color: '#f59e0b', background: '#fef3c7', padding: '4px 12px', borderRadius: 6, marginTop: 12 }}>
-                                    <span className="animate-pulse">⚙️</span> AI TRAINING IN PROGRESS
-                                </div>
-                            )}
+                    
+                    {/* Details Grid */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 20 }}>
+                        <div style={{ background: 'var(--color-surface-2)', padding: 12, borderRadius: 10 }}>
+                            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textTransform: 'uppercase' }}>Gender</div>
+                            <div style={{ fontSize: 14, fontWeight: 600 }}>{actor.gender || '-'}</div>
                         </div>
-                        <button onClick={onClose} style={{ width: 40, height: 40, borderRadius: '50%', background: 'var(--color-surface-2)', border: 'none', cursor: 'pointer', fontSize: 20, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
-                    </div>
-
-                    {/* Stats Chips */}
-                    <div style={{ display: 'flex', gap: 10, marginTop: 32, flexWrap: 'wrap' }}>
-                        {actor.gender && <div style={{ padding: '8px 16px', background: 'var(--color-surface-2)', borderRadius: 12, fontSize: 14, fontWeight: 600 }}>🏷️ {actor.gender}</div>}
-                        {actor.age_range && <div style={{ padding: '8px 16px', background: 'var(--color-surface-2)', borderRadius: 12, fontSize: 14, fontWeight: 600 }}>🎂 {actor.age_range} Years</div>}
-                        {actor.ethnicity && <div style={{ padding: '8px 16px', background: 'var(--color-surface-2)', borderRadius: 12, fontSize: 14, fontWeight: 600 }}>🌏 {actor.ethnicity}</div>}
-                    </div>
-
-                    <div style={{ marginTop: 40 }}>
-                        <h3 style={{ fontSize: 16, fontWeight: 800, color: 'var(--color-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>Description</h3>
-                        <div style={{ fontSize: 16, lineHeight: 1.6, color: 'var(--color-text-primary)' }}>
-                            {actor.description || 'No description provided for this actor.'}
+                        <div style={{ background: 'var(--color-surface-2)', padding: 12, borderRadius: 10 }}>
+                            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textTransform: 'uppercase' }}>Age Range</div>
+                            <div style={{ fontSize: 14, fontWeight: 600 }}>{actor.age_range || '-'}</div>
+                        </div>
+                        <div style={{ background: 'var(--color-surface-2)', padding: 12, borderRadius: 10 }}>
+                            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textTransform: 'uppercase' }}>Ethnicity</div>
+                            <div style={{ fontSize: 14, fontWeight: 600 }}>{actor.ethnicity || '-'}</div>
+                        </div>
+                        <div style={{ background: 'var(--color-surface-2)', padding: 12, borderRadius: 10 }}>
+                            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textTransform: 'uppercase' }}>Usage Fee</div>
+                            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-accent)' }}>🪙 {actor.usage_fee || 0}</div>
+                        </div>
+                        <div style={{ background: 'var(--color-surface-2)', padding: 12, borderRadius: 10 }}>
+                            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textTransform: 'uppercase' }}>Popularity</div>
+                            <div style={{ fontSize: 14, fontWeight: 600 }}>{actor.popularity_score}</div>
+                        </div>
+                        <div style={{ background: 'var(--color-surface-2)', padding: 12, borderRadius: 10 }}>
+                            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textTransform: 'uppercase' }}>Experience</div>
+                            <div style={{ fontSize: 14, fontWeight: 600 }}>{actor.experience_points}</div>
                         </div>
                     </div>
-
-                    {/* Decision Data */}
-                    <div style={{ marginTop: 'auto', paddingTop: 40, display: 'flex', flexDirection: 'column', gap: 20 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px', background: 'linear-gradient(135deg,#f8faff,#f0f4ff)', border: '1px solid #e0e7ff', borderRadius: 20 }}>
-                            <div>
-                                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-secondary)', textTransform: 'uppercase' }}>Daily Usage Fee</div>
-                                <div style={{ fontSize: 28, fontWeight: 900, color: 'var(--color-accent)', marginTop: 4 }}>🪙 {actor.usage_fee || 0} <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-tertiary)' }}>Credits</span></div>
-                            </div>
-                            <button className="btn btn-primary" style={{ padding: '12px 28px', borderRadius: 14, fontSize: 15, fontWeight: 800 }} onClick={onClose}>
-                                Select for Project
-                            </button>
+                    
+                    {/* Description */}
+                    {actor.description && (
+                        <div style={{ marginBottom: 20 }}>
+                            <h4 style={{ fontSize: 11, color: 'var(--color-text-tertiary)', textTransform: 'uppercase', marginBottom: 8 }}>Description</h4>
+                            <p style={{ fontSize: 13, lineHeight: 1.5, margin: 0 }}>{actor.description}</p>
                         </div>
-
-                        {actor.lora_url && (
-                            <div style={{ padding: '16px 20px', background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
-                                <div style={{ fontSize: 24 }}>✨</div>
-                                <div style={{ fontSize: 13, color: '#5b21b6', lineHeight: 1.4 }}>
-                                    This actor is <strong>AI-Enabled</strong>. You can use their custom LoRA model to generate scenes with infinite poses and expressions.
-                                </div>
-                            </div>
-                        )}
-                    </div>
+                    )}
+                    
+                    {/* Visual DNA */}
+                    {actor.visual_dna && (
+                        <div style={{ background: '#f0fdfa', border: '1px solid #99f6e4', borderRadius: 12, padding: 14, marginBottom: 20 }}>
+                            <h4 style={{ fontSize: 11, color: '#0d9488', textTransform: 'uppercase', margin: '0 0 8px' }}>🧬 Visual DNA</h4>
+                            <p style={{ fontSize: 12, color: '#134e4a', margin: 0, lineHeight: 1.5, maxHeight: 100, overflow: 'auto' }}>{actor.visual_dna}</p>
+                        </div>
+                    )}
+                    
+                    {/* LoRA */}
+                    {actor.lora_url && (
+                        <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 12, padding: 14, marginBottom: 20 }}>
+                            <h4 style={{ fontSize: 11, color: '#7c3aed', textTransform: 'uppercase', margin: '0 0 8px' }}>🧠 LoRA Model</h4>
+                            <p style={{ fontSize: 11, color: '#5b21b6', margin: 0, wordBreak: 'break-all' }}>{actor.lora_url}</p>
+                        </div>
+                    )}
                 </div>
             </div>
         </div>
