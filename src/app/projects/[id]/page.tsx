@@ -98,9 +98,10 @@ interface ShotBlockProps {
     onMoveDown?: () => void;
     isFirst?: boolean;
     isLast?: boolean;
+    startTimestamp?: number;
 }
 
-function ShotBlock({ shot, isActive, onActivate, onSave, onDelete, onRender, scrollRef, characters, actors, onMoveUp, onMoveDown, isFirst, isLast }: ShotBlockProps) {
+function ShotBlock({ shot, isActive, onActivate, onSave, onDelete, onRender, scrollRef, characters, actors, onMoveUp, onMoveDown, isFirst, isLast, startTimestamp = 0 }: ShotBlockProps) {
     const [script, setScript] = useState<ShotScript>(() => parseShotScript(shot.sfx_prompt));
     const [angle, setAngle] = useState(shot.camera_angle ?? '');
     const [motion, setMotion] = useState(shot.motion_type ?? '');
@@ -110,6 +111,15 @@ function ShotBlock({ shot, isActive, onActivate, onSave, onDelete, onRender, scr
     const [saving, setSaving] = useState(false);
     const [showCamera, setShowCamera] = useState(false);
     const [actionFocused, setActionFocused] = useState(false);
+
+    // Format timestamp helper
+    const formatTime = (seconds: number) => {
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    };
+    const timestampStart = formatTime(startTimestamp);
+    const timestampEnd = formatTime(startTimestamp + dur);
 
     // -- Mention logic --
     const [mentionState, setMentionState] = useState<{ active: boolean; query: string; index: number }>({ active: false, query: '', index: 0 });
@@ -176,7 +186,7 @@ function ShotBlock({ shot, isActive, onActivate, onSave, onDelete, onRender, scr
 
     useEffect(() => { setStatus(shot.status); }, [shot.status]);
 
-    const save = useCallback(async (overrides?: Partial<{ angle: string; motion: string; lens: string; dur: number; status: string; script: ShotScript }>) => {
+    const save = useCallback(async (overrides?: Partial<{ angle: string; motion: string; lens: string; dur: number; status: string; script: ShotScript; timestamp_start: number }>) => {
         setSaving(true);
         const a = overrides?.angle ?? angle;
         const m = overrides?.motion ?? motion;
@@ -184,9 +194,10 @@ function ShotBlock({ shot, isActive, onActivate, onSave, onDelete, onRender, scr
         const d = overrides?.dur ?? dur;
         const s = overrides?.status ?? status;
         const sc = overrides?.script ?? script;
-        await onSave(shot.id, { camera_angle: a || null, motion_type: m || null, focal_length: l || null, target_duration: d, status: s, sfx_prompt: stringifyShotScript(sc) });
+        const ts = overrides?.timestamp_start ?? startTimestamp;
+        await onSave(shot.id, { camera_angle: a || null, motion_type: m || null, focal_length: l || null, target_duration: d, status: s, sfx_prompt: stringifyShotScript(sc), timestamp_start: ts });
         setSaving(false);
-    }, [angle, motion, lens, dur, status, script, onSave, shot.id]);
+    }, [angle, motion, lens, dur, status, script, onSave, shot.id, startTimestamp]);
 
     const updateScript = (key: keyof ShotScript, val: any) => {
         setScript(prev => {
@@ -255,6 +266,9 @@ function ShotBlock({ shot, isActive, onActivate, onSave, onDelete, onRender, scr
                         </div>
                         <span style={{ fontFamily: 'Courier Prime, Courier New, monospace', fontWeight: 700, fontSize: 13, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--color-text-primary)' }}>
                             SHOT {shot.shot_order}
+                        </span>
+                        <span style={{ fontSize: 10, color: '#fff', background: 'var(--color-accent)', padding: '2px 8px', borderRadius: 4, whiteSpace: 'nowrap', fontFamily: 'monospace' }}>
+                            [{timestampStart}-{timestampEnd}]
                         </span>
                         <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', background: 'var(--color-surface-2)', padding: '2px 8px', borderRadius: 4, whiteSpace: 'nowrap' }}>
                             {[angle || '—', motion || 'Static', lens || '—'].join(' · ')} · {dur}s
@@ -908,7 +922,8 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         setMutating(true);
         try {
             const existing = sceneShots[selectedSceneId] ?? [];
-            const c = await shotService.create({ scene_id: selectedSceneId, shot_order: existing.length + 1, target_duration: 5 }, tenantId, user?.id);
+            const startTimestamp = existing.reduce((acc, s) => acc + (s.target_duration || 0), 0);
+            const c = await shotService.create({ scene_id: selectedSceneId, shot_order: existing.length + 1, target_duration: 5, timestamp_start: startTimestamp }, tenantId, user?.id);
             setSceneShots(p => ({ ...p, [selectedSceneId]: [...(p[selectedSceneId] ?? []), c] }));
             setActiveShot(c.id);
             setTimeout(() => shotRefs.current[c.id]?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
@@ -1564,7 +1579,9 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                                                 <button className="btn btn-primary" onClick={handleAddShot}>+ Add First Shot</button>
                                             </div>
                                         ) : (
-                                            currentShots.map((shot, i) => (
+                                            currentShots.map((shot, i) => {
+                                                const startTimestamp = currentShots.slice(0, i).reduce((acc, s) => acc + (s.target_duration || 0), 0);
+                                                return (
                                                 <div
                                                     key={shot.id}
                                                     draggable
@@ -1608,9 +1625,11 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                                                         isLast={i === currentShots.length - 1}
                                                         onMoveUp={() => handleMoveShot('up', i)}
                                                         onMoveDown={() => handleMoveShot('down', i)}
+                                                        startTimestamp={startTimestamp}
                                                     />
                                                 </div>
-                                            ))
+                                            );
+                                            })
                                         )}
                                         {/* End of scene marker */}
                                         {currentShots.length > 0 && (

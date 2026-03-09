@@ -640,6 +640,7 @@ export interface ShotRead {
     scene_id: string;
     shot_order: number;
     target_duration: number;
+    timestamp_start?: number;
     camera_angle?: string | null;
     motion_type?: string | null;
     focal_length?: string | null;
@@ -657,6 +658,7 @@ export interface ShotCreate {
     scene_id: string;
     shot_order: number;
     target_duration?: number;
+    timestamp_start?: number;
     camera_angle?: string | null;
     motion_type?: string | null;
     focal_length?: string | null;
@@ -668,6 +670,7 @@ export interface ShotCreate {
 export interface ShotUpdate {
     shot_order?: number;
     target_duration?: number;
+    timestamp_start?: number;
     camera_angle?: string | null;
     motion_type?: string | null;
     focal_length?: string | null;
